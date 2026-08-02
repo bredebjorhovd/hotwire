@@ -261,7 +261,12 @@
   border-color: var(--color-success);
 }
 
-.badge--missing,
+.badge--missing {
+  color: var(--color-text-secondary);
+  border-color: var(--color-border);
+  background: transparent;
+}
+
 .badge--error {
   color: var(--color-failure);
   border-color: var(--color-failure);
@@ -816,7 +821,21 @@
     padding-inline: var(--space-4);
   }
 
+  /* Narrow viewports: shrink all four numpad tracks and let the tray fill
+   * its container so the signature object never overflows. Width arithmetic
+   * at the 320px minimum viewport:
+   *   screen content   = 320 − 2·16 (screen padding)         = 288px
+   *   tray inner width = 288 − 2·12 (tray clamp floor)       = 264px
+   *   fixed grid        = 4·64 + 3·8 (gaps)                  = 280px  → overflows
+   *   shrink grid       = (264 − 3·8) / 4                    = 60px per track ✓
+   * Desktop geometry (minmax(64px, 1fr)) is preserved above 580px.
+   */
+  .board-tray {
+    width: 100%;
+  }
+
   .numpad {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     grid-auto-rows: minmax(44px, 1fr);
   }
 }
