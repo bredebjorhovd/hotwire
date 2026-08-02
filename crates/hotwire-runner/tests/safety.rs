@@ -1,6 +1,7 @@
 //! End-to-end safety flows (SAFE-001 acceptance): risk classification,
 //! timeout/cancellation, environment redaction, imported-command approval, and
-//! the review-before-execute boundary enforced by the runner.
+//! the review-before-execute boundary enforced by the runner on the resolved
+//! plan.
 
 use std::time::Duration;
 
@@ -16,8 +17,11 @@ fn build_command(program: &str, args: &[&str]) -> CommandSpec {
     CommandSpec::new(full_argv)
 }
 
-fn imported(program: &str, args: &[&str]) -> CommandSpec {
-    build_command(program, args)
+/// A harmless imported command that is still confirmation-risk (`sh` is not an
+/// approved CLI, so an imported `sh` needs review). Tests never execute a
+/// destructive program.
+fn imported_harmless() -> CommandSpec {
+    build_command("/bin/sh", &["-c", "printf ok"])
         .with_imported(true)
         .with_open_terminal(false)
 }
@@ -30,30 +34,34 @@ fn background(program: &str, args: &[&str]) -> CommandSpec {
 async fn imported_confirmation_commands_require_approval_before_they_run() {
     let runner = CommandRunner::new();
     let token = CancellationToken::new();
-    let spec = imported("rm", &["-rf", "/tmp/nonexistent"]);
+    let spec = imported_harmless();
+    let plan = spec.resolve(None).expect("plan resolves");
 
     // The review surface shows the exact command line before anything runs.
-    let ApprovalDecision::Pending(review) = runner.request_approval(&spec) else {
-        panic!("an imported destructive command must become a pending review");
+    let ApprovalDecision::Pending(review) = runner.request_approval(&plan) else {
+        panic!("an imported confirmation command must become a pending review");
     };
-    assert_eq!(review.spec.describe(), "rm -rf /tmp/nonexistent");
+    assert_eq!(review.plan.describe(), "/bin/sh -c \"printf ok\"");
 
-    // The direct run is refused until the exact spec is approved.
+    // The direct run is refused until the exact resolved plan is approved.
     let refused = runner.run(&spec, &token, None).await;
     assert!(
         matches!(refused.status, RunStatus::ApprovalRequired(_)),
         "a direct imported confirmation run must not start before approval"
     );
 
-    let approved = runner.approve(&review.id).expect("approval succeeds");
-    assert_eq!(approved, spec);
+    let approved = runner
+        .approve(review.id.as_str())
+        .expect("approval succeeds");
+    assert_eq!(approved, plan);
     assert_eq!(
-        runner.request_approval(&spec),
+        runner.request_approval(&plan),
         ApprovalDecision::AlreadyApproved
     );
 
     let output = runner.run(&spec, &token, None).await;
     assert_eq!(output.status, RunStatus::Succeeded { exit_code: 0 });
+    assert_eq!(output.stdout, "ok");
 }
 
 #[tokio::test]

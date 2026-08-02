@@ -21,6 +21,7 @@
 
 mod command;
 mod env;
+mod id;
 mod log;
 mod raw;
 mod redact;
@@ -31,16 +32,17 @@ mod run;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-pub use command::{CommandError, CommandSpec, CwdStrategy, ResolvedCwd};
-pub use env::{SanitizedEnv, SecretSet};
+pub use command::{CommandError, CommandSpec, CwdStrategy, ResolvedCwd, ResolvedPlan};
+pub use env::{host_env, SanitizedEnv, SecretSet};
+pub use id::{ActionId, AdapterId, IdentifierError, PhysicalCode, ReviewId};
 pub use log::{
     EventDetail, FileSink, InMemorySink, LogCategory, LogEntry, LogLevel, LogSink, SafetyLog,
     TapDisableReason,
 };
-pub use raw::{RawEventDiagnostics, RawEventSample};
+pub use raw::{RawEventDiagnostics, RawEventError, RawEventSample};
 pub use redact::{Redactor, REDACTED};
 pub use review::{ApprovalDecision, ApprovalError, ApprovalStore, PendingReview};
-pub use risk::{classify_command_risk, RiskLevel};
+pub use risk::{classify_argv, classify_command_risk, RiskLevel};
 pub use run::{CommandOutput, CommandRunner, RunStatus};
 
 /// A cooperatively shared cancellation flag for in-flight executions.

@@ -9,7 +9,10 @@ builds on the platform-neutral runtime (CORE-001) and the shell (APP-001).
 Commands are argument arrays, never shell strings. `CommandSpec::new(["open",
 "Herdr.app", "--wait"])` carries `argv`, a working-directory strategy, a
 sanitized environment, a timeout, a visible-terminal flag, and an `imported`
-flag.
+flag. Before anything runs — review or execution — the spec is resolved into an
+immutable [`ResolvedPlan`](crate::command::ResolvedPlan): the exact working
+directory and the complete child-environment snapshot, so approval and
+execution operate on the same resolved plan.
 
 ### Working-directory strategies (spec §13.3)
 
@@ -47,56 +50,68 @@ instead of a false "spawned" report.
 ### Timeouts and cancellation (spec §20)
 
 `CommandRunner::run` spawns the process with `kill_on_drop` into its **own
-process group**, captures stdout and stderr up to a cap, and races completion
-against the spec timeout and a shared `CancellationToken`. On timeout or
-cancellation the *whole group* is killed and reaped — the command and any
-descendants it spawned — not just the immediate child. The visible-terminal
-path hands the command to a real terminal session (`osascript` on macOS) and
-returns `SpawnedInTerminal`; the default for user-authored development commands
-is a visible terminal (spec §13.3). Visible-terminal runs are explicitly
+process group**, captures stdout and stderr up to a cap (draining fully past
+the cap so a high-output child never hits EPIPE), and races completion against
+the spec timeout and a shared `CancellationToken`. On timeout or cancellation
+the *whole group* is killed and reaped — the command and any descendants it
+spawned — not just the immediate child. The visible-terminal path hands the
+command to a real terminal session (`osascript` on macOS) and returns
+`SpawnedInTerminal`; the default for user-authored development commands is a
+visible terminal (spec §13.3). Visible-terminal runs are explicitly
 **untracked**: the runner does not wait on them and claims no timeout or
 cancellation coverage.
 
 ## Risk classification (spec §15.2)
 
-`classify_command_risk` maps every command to `RiskLevel`:
+`classify_argv` maps every command to `RiskLevel`, conservatively:
 
 - **Confirmation** — destructive programs (`rm`, `dd`, `mkfs`, `diskutil`,
-  `shutdown`, …) and arbitrary executables from imported profiles (anything
-  not on the approved-CLI list).
-- **Low** — approved CLIs (`open`, `git`, `herdr`, `claude`, …) and
+  `shutdown`, `chmod`, …), destructive argument forms on approved CLIs
+  (`git clean -fdx`, `git reset --hard`, `git push --force`, `cp -f`,
+  `mv --force`), destructive payloads passed to shell interpreters
+  (`sh`/`bash`/`zsh` `-c "rm -rf …"`, even user-authored), and arbitrary
+  executables from imported profiles (anything not on the approved-CLI list).
+  Unknown imported forms fail toward confirmation.
+- **Low** — approved CLIs (`open`, `git status`, `herdr`, `claude`, …) and
   non-destructive user-authored commands.
 
 ## Review-before-execute (spec §14, §15.2)
 
 `ApprovalStore` implements imported-command approval, and `CommandRunner`
 **enforces it on the only public execution path**: a confirmation-risk imported
-command returns `RunStatus::ApprovalRequired` without starting anything until
-its exact structured spec is approved. The first execution of an imported
-confirmation-level action produces a `PendingReview` carrying the exact command
-line (`CommandSpec::describe`); `approve` lets it run and `deny` drops it
-without approving. An approval is bound to the **complete immutable spec** —
-argv, working-directory strategy, sanitized environment, timeout, terminal
-mode, and provenance — so mutating any security-relevant field forces a new
-review; it cannot be reused by a different execution plan.
+command is first resolved into an immutable [`ResolvedPlan`] (working directory
+and complete environment snapshot), returns `RunStatus::ApprovalRequired`
+without starting anything until that exact plan is approved, and then executes
+precisely the approved plan. The first execution produces a `PendingReview`
+carrying the exact command line (`ResolvedPlan::describe`); `approve` lets it
+run and `deny` drops it without approving. Because approval is bound to the
+**resolved plan** — argv, the exact working directory, the full environment
+snapshot (including inherited values), timeout, terminal mode, and provenance —
+running in a different project directory or after an inherited `PATH` changes
+yields a different plan that must be reviewed again.
 
 ## Redacted, structured local logs (spec §15.1, §15.3)
 
-`LogEntry` has a closed field set — timestamp, level, category, action id,
-adapter id, the single matched physical code, and a structured `EventDetail`
-(success/failure with an exit code, approval lifecycle, capture pause/resume,
-shutdown, tap health). There is **no free-text field at all**, so typed text,
-prompts, file paths, and arbitrary key sequences are *unrepresentable* in the
-persistent log, and secrets have no field to leak through. `SafetyLog` writes
-only these allowlisted fields to `InMemorySink` or `FileSink` (JSON lines).
-Raw-event capture is a **separate, explicit opt-in surface** that auto-disables
-after a short window and is never persisted (`RawEventDiagnostics`).
+`LogEntry` has a closed field set — timestamp, level, category, and validated
+identifier newtypes (`ActionId`, `AdapterId`, `PhysicalCode`, `ReviewId`) plus
+a structured `EventDetail` (success/failure with an exit code, approval
+lifecycle, capture pause/resume, shutdown, tap health). There is **no
+free-text field at all**, and every string-bearing field is a validated
+identifier (prompts, paths, and key sequences are rejected at construction),
+so forbidden payloads are *unrepresentable* in the persistent log.
+`SafetyLog` writes only these allowlisted fields to `InMemorySink` or
+`FileSink` (JSON lines). Raw-event capture is a **separate, explicit opt-in
+surface** that auto-disables after a short window capped at 60 s, keeps a
+bounded ring buffer of 1024 samples, and is never persisted
+(`RawEventDiagnostics`).
 
 Secret hygiene is layered: `SanitizedEnv` tracks marked keys, redacts them from
 the built environment, and seeds a `Redactor` from the **resolved**
 environment (explicit *and* inherited values), so a secret the child echoes
-bare is masked. Derived `Debug` output for `SanitizedEnv` and `CommandSpec`
-masks secret values and runs argv through the env's redactor.
+bare is masked. Derived `Debug` output for `SanitizedEnv`, `CommandSpec`, and
+`ResolvedPlan` masks secret values and runs argv through the env's redactor.
+Visible-terminal runs that carry marked secrets are **refused** rather than
+rendering the secrets into the terminal command line or scrollback.
 
 The structural guarantee is that **diagnostics never contain typed text,
 prompts, secrets, or arbitrary key sequences**: the log model has no field for

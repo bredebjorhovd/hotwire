@@ -220,6 +220,49 @@ impl CommandSpec {
         self.cwd.resolve(project)
     }
 
+    /// Resolves this spec into an immutable [`ResolvedPlan`] for the current
+    /// host environment.
+    ///
+    /// Resolution snapshots the working directory and the full child
+    /// environment *before* any review or execution, so the plan (not the
+    /// spec) is what approval is bound to and what runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`CommandSpec::validate`], plus
+    /// [`CommandError::CwdUnresolved`] when the strategy needs a directory that
+    /// cannot be found or a user prompt.
+    pub fn resolve(&self, project: Option<&std::path::Path>) -> Result<ResolvedPlan, CommandError> {
+        self.resolve_with(project, &crate::env::host_env())
+    }
+
+    /// Like [`CommandSpec::resolve`], but resolves the environment against a
+    /// supplied host map so resolution is deterministic in tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`CommandSpec::resolve`].
+    pub fn resolve_with(
+        &self,
+        project: Option<&std::path::Path>,
+        host: &std::collections::BTreeMap<String, String>,
+    ) -> Result<ResolvedPlan, CommandError> {
+        self.validate()?;
+        let cwd = match self.cwd.resolve(project)? {
+            ResolvedCwd::Working(dir) => dir,
+            ResolvedCwd::AskUser => return Err(CommandError::CwdUnresolved),
+        };
+        Ok(ResolvedPlan {
+            argv: self.argv.clone(),
+            cwd,
+            env: self.env.build_from(host),
+            secrets: self.env.secret_keys().clone(),
+            timeout: self.timeout,
+            open_terminal: self.open_terminal,
+            imported: self.imported,
+        })
+    }
+
     /// Validates that the spec is safe to plan.
     ///
     /// # Errors
@@ -237,6 +280,111 @@ impl CommandSpec {
         }
         self.env.validate()?;
         Ok(())
+    }
+}
+
+/// The immutable, fully resolved execution plan.
+///
+/// Produced by [`CommandSpec::resolve`] *before* any review or execution. The
+/// working directory and the complete child environment (including values
+/// inherited from the host) are snapshotted here, so approval and execution
+/// both operate on the exact same plan: changing the current project or an
+/// inherited environment value yields a different plan that must be reviewed
+/// again.
+///
+/// `Eq`/`Ord` are full structural equality over the plan. `Debug` is redacted:
+/// secret environment values and secret argv arguments are masked.
+#[derive(Clone, Eq, PartialEq, PartialOrd, Ord)]
+pub struct ResolvedPlan {
+    /// The program and its arguments. `argv[0]` is the executable.
+    pub argv: Vec<String>,
+    /// The exact working directory the command runs in.
+    pub cwd: PathBuf,
+    /// The complete child environment snapshot.
+    pub env: std::collections::BTreeMap<String, String>,
+    /// The environment keys whose values are marked secrets.
+    pub secrets: std::collections::BTreeSet<String>,
+    /// How long the command may run before the runner kills it.
+    pub timeout: Duration,
+    /// Run the command in a visible terminal instead of capturing it.
+    pub open_terminal: bool,
+    /// Whether this command came from an imported profile.
+    pub imported: bool,
+}
+
+impl fmt::Debug for ResolvedPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let redactor = self.redactor();
+        formatter
+            .debug_struct("ResolvedPlan")
+            .field(
+                "argv",
+                &self
+                    .argv
+                    .iter()
+                    .map(|arg| redactor.redact(arg))
+                    .collect::<Vec<_>>(),
+            )
+            .field("cwd", &self.cwd)
+            .field("env", &self.redacted_env())
+            .field("secrets", &self.secrets)
+            .field("timeout", &self.timeout)
+            .field("open_terminal", &self.open_terminal)
+            .field("imported", &self.imported)
+            .finish()
+    }
+}
+
+impl ResolvedPlan {
+    /// Returns the command's risk level ([`RiskLevel::Confirmation`] for
+    /// destructive shell commands and arbitrary imported executables).
+    #[must_use]
+    pub fn risk(&self) -> RiskLevel {
+        crate::risk::classify_argv(&self.argv, self.imported)
+    }
+
+    /// Returns the exact command line shown to the user in the review screen.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        self.argv
+            .iter()
+            .map(|arg| describe_arg(arg))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Returns the environment with every marked secret value masked.
+    #[must_use]
+    pub fn redacted_env(&self) -> std::collections::BTreeMap<String, String> {
+        self.env
+            .iter()
+            .map(|(key, value)| {
+                if self.secrets.contains(key) {
+                    (key.clone(), crate::redact::REDACTED.to_string())
+                } else {
+                    (key.clone(), value.clone())
+                }
+            })
+            .collect()
+    }
+
+    /// Returns whether a marked secret has a value in the resolved environment.
+    #[must_use]
+    pub fn has_marked_secret(&self) -> bool {
+        self.env.keys().any(|key| self.secrets.contains(key))
+    }
+
+    /// Returns a [`Redactor`] seeded from this plan's resolved secrets.
+    #[must_use]
+    pub fn redactor(&self) -> crate::redact::Redactor {
+        let mut redactor = crate::redact::Redactor::new();
+        for key in &self.secrets {
+            redactor = redactor.with_key(key.clone());
+            if let Some(value) = self.env.get(key) {
+                redactor = redactor.with_literal(value.clone());
+            }
+        }
+        redactor
     }
 }
 

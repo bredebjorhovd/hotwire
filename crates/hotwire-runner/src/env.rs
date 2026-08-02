@@ -18,6 +18,19 @@ pub type SecretSet = BTreeSet<String>;
 /// The value substituted for secret values in redacted output.
 const REDACTED_VALUE: &str = "[REDACTED]";
 
+/// Snapshot of the process environment, lossy so non-UTF-8 values never panic.
+#[must_use]
+pub fn host_env() -> BTreeMap<String, String> {
+    std::env::vars_os()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.to_string_lossy().into_owned(),
+            )
+        })
+        .collect()
+}
+
 /// A sanitized environment for one command execution.
 ///
 /// `Eq`/`Ord` are full structural equality over the resolved plan, which is
@@ -103,14 +116,23 @@ impl SanitizedEnv {
         self.explicit.keys().cloned().collect()
     }
 
-    /// Builds the child environment: allowed host variables plus explicit
-    /// variables (explicit wins).
+    /// Builds the child environment from the current host environment: allowed
+    /// host variables plus explicit variables (explicit wins).
     #[must_use]
     pub fn build(&self) -> BTreeMap<String, String> {
+        self.build_from(&host_env())
+    }
+
+    /// Builds the child environment from a supplied host map.
+    ///
+    /// `host` plays the role of the process environment so resolution can be
+    /// tested deterministically; [`SanitizedEnv::build`] passes the real one.
+    #[must_use]
+    pub fn build_from(&self, host: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         let mut env = BTreeMap::new();
         for key in &self.inherit {
-            if let Some(value) = std::env::var_os(key) {
-                env.insert(key.clone(), value.to_string_lossy().into_owned());
+            if let Some(value) = host.get(key) {
+                env.insert(key.clone(), value.clone());
             }
         }
         for (key, value) in &self.explicit {

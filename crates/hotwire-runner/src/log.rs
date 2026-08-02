@@ -15,6 +15,8 @@ use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::id::{ActionId, AdapterId, PhysicalCode, ReviewId};
+
 /// How severe a log entry is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LogLevel {
@@ -53,9 +55,10 @@ pub enum TapDisableReason {
 /// A structured, allowlisted record of what happened.
 ///
 /// This is the *only* payload a persistent log entry can carry. Every variant
-/// is a fixed category plus safe numeric or identifier fields — no free text,
-/// no paths, no commands, no key sequences. Rendering a failure carries at
-/// most an exit code.
+/// is a fixed category plus safe numeric or validated-identifier fields — no
+/// free text, no paths, no commands, no key sequences. Rendering a failure
+/// carries at most an exit code; approval records carry an internally
+/// generated [`ReviewId`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EventDetail {
     /// An execution began.
@@ -69,11 +72,11 @@ pub enum EventDetail {
     /// An execution exceeded its timeout.
     ExecutionTimedOut,
     /// An imported confirmation-risk command awaits approval.
-    ApprovalRequired { review_id: String },
+    ApprovalRequired { review_id: ReviewId },
     /// An approval was granted.
-    ApprovalGranted { review_id: String },
+    ApprovalGranted { review_id: ReviewId },
     /// An approval was denied.
-    ApprovalDenied { review_id: String },
+    ApprovalDenied { review_id: ReviewId },
     /// Capture was paused, cancelling this many in-flight executions.
     CapturePaused { cancelled: usize },
     /// Capture resumed.
@@ -124,11 +127,11 @@ pub struct LogEntry {
     pub level: LogLevel,
     pub category: LogCategory,
     /// The semantic action id, e.g. `shell.run`.
-    pub action_id: Option<String>,
+    pub action_id: Option<ActionId>,
     /// The adapter id that executed the action.
-    pub adapter_id: Option<String>,
+    pub adapter_id: Option<AdapterId>,
     /// The single matched physical code (a configured binding).
-    pub physical_code: Option<String>,
+    pub physical_code: Option<PhysicalCode>,
     /// The structured record of what happened.
     pub detail: EventDetail,
 }
@@ -150,20 +153,16 @@ impl LogEntry {
 
     /// Attaches action/adapter identifiers to the entry.
     #[must_use]
-    pub fn with_action(
-        mut self,
-        action_id: impl Into<String>,
-        adapter_id: impl Into<String>,
-    ) -> Self {
-        self.action_id = Some(action_id.into());
-        self.adapter_id = Some(adapter_id.into());
+    pub fn with_action(mut self, action_id: ActionId, adapter_id: AdapterId) -> Self {
+        self.action_id = Some(action_id);
+        self.adapter_id = Some(adapter_id);
         self
     }
 
     /// Attaches the single matched physical code to the entry.
     #[must_use]
-    pub fn with_physical_code(mut self, physical_code: impl Into<String>) -> Self {
-        self.physical_code = Some(physical_code.into());
+    pub fn with_physical_code(mut self, physical_code: PhysicalCode) -> Self {
+        self.physical_code = Some(physical_code);
         self
     }
 }
@@ -261,11 +260,14 @@ fn serialize_entry(entry: &LogEntry) -> String {
         LogCategory::Diagnostics => "diagnostics",
     });
     out.push_str("\",\"actionId\":");
-    push_optional(&mut out, entry.action_id.as_deref());
+    push_optional(&mut out, entry.action_id.as_ref().map(ActionId::as_str));
     out.push_str(",\"adapterId\":");
-    push_optional(&mut out, entry.adapter_id.as_deref());
+    push_optional(&mut out, entry.adapter_id.as_ref().map(AdapterId::as_str));
     out.push_str(",\"physicalCode\":");
-    push_optional(&mut out, entry.physical_code.as_deref());
+    push_optional(
+        &mut out,
+        entry.physical_code.as_ref().map(PhysicalCode::as_str),
+    );
     out.push_str(",\"detail\":");
     out.push_str(&serialize_detail(&entry.detail));
     out.push('}');
@@ -286,7 +288,7 @@ fn serialize_detail(detail: &EventDetail) -> String {
         | EventDetail::ApprovalGranted { review_id }
         | EventDetail::ApprovalDenied { review_id } => {
             out.push_str(",\"reviewId\":");
-            push_optional(&mut out, Some(review_id));
+            push_optional(&mut out, Some(review_id.as_str()));
         }
         EventDetail::CapturePaused { cancelled } | EventDetail::Shutdown { cancelled } => {
             out.push_str(",\"cancelled\":");
@@ -426,27 +428,43 @@ mod tests {
             LogCategory::Execution,
             EventDetail::ExecutionSucceeded,
         )
-        .with_action("app.open_or_focus", "herdr")
-        .with_physical_code("Numpad5");
+        .with_action(
+            ActionId::try_new("app.open_or_focus").expect("valid action id"),
+            AdapterId::try_new("herdr").expect("valid adapter id"),
+        )
+        .with_physical_code(PhysicalCode::try_new("Numpad5").expect("valid code"));
 
-        assert_eq!(entry.action_id.as_deref(), Some("app.open_or_focus"));
-        assert_eq!(entry.adapter_id.as_deref(), Some("herdr"));
-        assert_eq!(entry.physical_code.as_deref(), Some("Numpad5"));
+        assert_eq!(
+            entry.action_id.as_ref().map(ActionId::as_str),
+            Some("app.open_or_focus")
+        );
+        assert_eq!(
+            entry.adapter_id.as_ref().map(AdapterId::as_str),
+            Some("herdr")
+        );
+        assert_eq!(
+            entry.physical_code.as_ref().map(PhysicalCode::as_str),
+            Some("Numpad5")
+        );
         assert_eq!(entry.detail, EventDetail::ExecutionSucceeded);
     }
 
     #[test]
     fn entries_have_no_field_for_typed_text_prompts_paths_or_key_sequences() {
-        // The log model is a closed set of identifiers plus a structured
-        // EventDetail; there is no free-text field at all. A serialized entry
-        // can therefore only ever contain the allowlisted keys.
+        // The log model is a closed set of validated identifiers plus a
+        // structured EventDetail; there is no free-text field at all. A
+        // serialized entry can therefore only ever contain the allowlisted
+        // keys.
         let entry = LogEntry::new(
             LogLevel::Error,
             LogCategory::Execution,
             EventDetail::ExecutionFailed { exit_code: Some(1) },
         )
-        .with_action("shell.run", "shell")
-        .with_physical_code("Numpad5");
+        .with_action(
+            ActionId::try_new("shell.run").expect("valid action id"),
+            AdapterId::try_new("shell").expect("valid adapter id"),
+        )
+        .with_physical_code(PhysicalCode::try_new("Numpad5").expect("valid code"));
         let json = serialize_entry(&entry);
 
         for allowed in [
@@ -474,7 +492,24 @@ mod tests {
     }
 
     #[test]
+    fn identifier_fields_reject_prompts_paths_and_key_sequences() {
+        // Every string-bearing log field is a validated newtype, so ordinary
+        // non-secret typed text cannot be represented in a log entry at all.
+        for value in [
+            "hello world",
+            "/Users/brede/secret/path",
+            "what is your name?",
+            "Numpad5 Numpad0 Numpad1",
+        ] {
+            assert!(ActionId::try_new(value).is_err(), "{value:?}");
+            assert!(AdapterId::try_new(value).is_err(), "{value:?}");
+            assert!(PhysicalCode::try_new(value).is_err(), "{value:?}");
+        }
+    }
+
+    #[test]
     fn structured_details_cover_each_lifecycle_surface() {
+        let review_id = ReviewId::try_new("review-1").expect("valid review id");
         let details = [
             EventDetail::ExecutionStarted,
             EventDetail::ExecutionSucceeded,
@@ -482,13 +517,13 @@ mod tests {
             EventDetail::ExecutionCancelled,
             EventDetail::ExecutionTimedOut,
             EventDetail::ApprovalRequired {
-                review_id: "review-1".into(),
+                review_id: review_id.clone(),
             },
             EventDetail::ApprovalGranted {
-                review_id: "review-1".into(),
+                review_id: review_id.clone(),
             },
             EventDetail::ApprovalDenied {
-                review_id: "review-1".into(),
+                review_id: review_id.clone(),
             },
             EventDetail::CapturePaused { cancelled: 1 },
             EventDetail::CaptureResumed,

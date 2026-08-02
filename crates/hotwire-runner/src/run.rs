@@ -1,19 +1,18 @@
 //! Process execution with timeouts and cancellation.
 //!
-//! [`CommandRunner`] spawns a [`CommandSpec`] as an argument array with a
-//! sanitized environment, a resolved working directory, a hard timeout, and a
-//! shared [`CancellationToken`](crate::CancellationToken). It is the *only*
-//! public execution path, and it enforces review-before-execute: an imported
-//! confirmation-risk command cannot start until its exact structured spec has
-//! been approved (spec §15.2).
+//! [`CommandRunner`] is the *only* public execution path. It first resolves a
+//! [`CommandSpec`] into an immutable [`ResolvedPlan`] (working directory and
+//! complete environment snapshotted), enforces review-before-execute on that
+//! plan, and then spawns exactly the approved plan (spec §15.2).
 //!
 //! Background commands run in their own process group, so a timeout or
 //! cancellation terminates the whole group — the command and any descendants —
 //! not just the immediate child. A visible-terminal command (the default for
 //! development commands, spec §13.3) is handed to a real terminal session and
 //! is explicitly *untracked*: it claims no timeout or cancellation coverage.
-//! Spawning and waiting always happen on a tokio task — never on a native
-//! input callback thread.
+//! Visible-terminal runs carrying marked secrets are refused rather than
+//! rendering the secrets into the terminal command line. Spawning and waiting
+//! always happen on a tokio task — never on a native input callback thread.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -21,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::command::{CommandError, CommandSpec, ResolvedCwd};
+use crate::command::{CommandSpec, ResolvedPlan};
 use crate::review::{ApprovalDecision, ApprovalError, ApprovalStore, PendingReview};
 use crate::CancellationToken;
 
@@ -44,7 +43,7 @@ pub enum RunStatus {
     SpawnedInTerminal,
     /// An imported confirmation-risk command must be approved before it can
     /// run. The payload is the id of the pending review to approve.
-    ApprovalRequired(String),
+    ApprovalRequired(crate::id::ReviewId),
     /// The command could not be started.
     StartError(String),
 }
@@ -63,9 +62,9 @@ pub struct CommandOutput {
 /// The single public command execution path.
 ///
 /// Owns the approval store, so review-before-execute cannot be bypassed: a
-/// confirmation-risk imported command is refused with
-/// [`RunStatus::ApprovalRequired`] until its exact spec is approved through
-/// this runner. Cheap to clone and share.
+/// confirmation-risk imported plan is refused with
+/// [`RunStatus::ApprovalRequired`] until its exact resolved plan is approved
+/// through this runner. Cheap to clone and share.
 #[derive(Clone, Debug, Default)]
 pub struct CommandRunner {
     approvals: Arc<Mutex<ApprovalStore>>,
@@ -84,22 +83,23 @@ impl CommandRunner {
         Self::default()
     }
 
-    /// Presents `spec` for review, returning the approval decision.
+    /// Presents a resolved plan for review, returning the approval decision.
     ///
     /// This is how a caller shows the review screen *before* the first run:
     /// the decision carries the pending review (with the exact command) to
-    /// display.
+    /// display. Resolve the spec with [`CommandSpec::resolve`] first so the
+    /// review shows and binds to the actual execution plan.
     #[must_use]
-    pub fn request_approval(&self, spec: &CommandSpec) -> ApprovalDecision {
-        lock(&self.approvals).request(spec)
+    pub fn request_approval(&self, plan: &ResolvedPlan) -> ApprovalDecision {
+        lock(&self.approvals).request(plan)
     }
 
-    /// Approves a pending review, returning the exact command that may now run.
+    /// Approves a pending review, returning the exact plan that may now run.
     ///
     /// # Errors
     ///
     /// Returns [`ApprovalError::UnknownReview`] when `review_id` is not pending.
-    pub fn approve(&self, review_id: &str) -> Result<CommandSpec, ApprovalError> {
+    pub fn approve(&self, review_id: &str) -> Result<ResolvedPlan, ApprovalError> {
         lock(&self.approvals).approve(review_id)
     }
 
@@ -118,20 +118,23 @@ impl CommandRunner {
         lock(&self.approvals).pending_reviews()
     }
 
-    /// Returns whether this exact structured spec was already approved.
+    /// Returns whether this exact resolved plan was already approved.
     #[must_use]
-    pub fn is_approved(&self, spec: &CommandSpec) -> bool {
-        lock(&self.approvals).is_approved(spec)
+    pub fn is_approved(&self, plan: &ResolvedPlan) -> bool {
+        lock(&self.approvals).is_approved(plan)
     }
 
     /// Runs `spec`, cancelling the child's process group when `token` is
     /// cancelled or the spec timeout elapses.
     ///
     /// `project` supplies the current-project hint used by the
-    /// [`CwdStrategy::CurrentProject`](crate::CwdStrategy) strategy.
+    /// [`CwdStrategy::CurrentProject`](crate::CwdStrategy) strategy. The spec
+    /// is resolved to an immutable plan first, and the approval check runs on
+    /// that resolved plan — so one approval cannot be reused for a different
+    /// project directory or a changed inherited environment.
     ///
-    /// An imported confirmation-risk command that has not been approved
-    /// returns [`RunStatus::ApprovalRequired`] without starting anything. A
+    /// An imported confirmation-risk plan that has not been approved returns
+    /// [`RunStatus::ApprovalRequired`] without starting anything. A
     /// visible-terminal command is handed to a real terminal and returns
     /// [`RunStatus::SpawnedInTerminal`] without tracking. Any other background
     /// command is tracked to completion, timeout, or cancellation.
@@ -141,16 +144,20 @@ impl CommandRunner {
         token: &CancellationToken,
         project: Option<&Path>,
     ) -> CommandOutput {
-        if let Err(error) = spec.validate() {
-            return CommandOutput {
-                status: RunStatus::StartError(error.to_string()),
-                stdout: String::new(),
-                stderr: String::new(),
-            };
-        }
+        let plan = match spec.resolve(project) {
+            Ok(plan) => plan,
+            Err(error) => {
+                return CommandOutput {
+                    status: RunStatus::StartError(error.to_string()),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                };
+            }
+        };
 
-        // Review-before-execute is enforced here, on the only execution path.
-        match self.request_approval(spec) {
+        // Review-before-execute is enforced here, on the only execution path,
+        // against the resolved plan.
+        match self.request_approval(&plan) {
             ApprovalDecision::NotRequired | ApprovalDecision::AlreadyApproved => {}
             ApprovalDecision::Pending(review) => {
                 return CommandOutput {
@@ -161,26 +168,19 @@ impl CommandRunner {
             }
         }
 
-        let cwd = match spec.resolve_cwd(project) {
-            Ok(ResolvedCwd::Working(dir)) => Some(dir),
-            Ok(ResolvedCwd::AskUser) => {
+        if plan.open_terminal {
+            if plan.has_marked_secret() {
                 return CommandOutput {
-                    status: RunStatus::StartError(CommandError::CwdUnresolved.to_string()),
+                    status: RunStatus::StartError(
+                        "visible-terminal runs cannot carry marked secrets; \
+                         they would be rendered into the terminal command line"
+                            .to_string(),
+                    ),
                     stdout: String::new(),
                     stderr: String::new(),
                 };
             }
-            Err(error) => {
-                return CommandOutput {
-                    status: RunStatus::StartError(error.to_string()),
-                    stdout: String::new(),
-                    stderr: String::new(),
-                };
-            }
-        };
-
-        if spec.open_terminal {
-            return match spawn_visible_terminal(spec, cwd.as_deref()).await {
+            return match spawn_visible_terminal(&plan).await {
                 Ok(()) => CommandOutput {
                     status: RunStatus::SpawnedInTerminal,
                     stdout: String::new(),
@@ -194,32 +194,27 @@ impl CommandRunner {
             };
         }
 
-        run_background(spec, token, cwd.as_deref()).await
+        run_background(&plan, token).await
     }
 }
 
 /// Builds the POSIX script handed to Terminal.app for a visible-terminal run.
 ///
-/// The script `cd`s into the fixed working directory (when one was resolved),
-/// then `exec env -i` with only the resolved sanitized environment followed by
-/// the argument array. Every word is single-quoted with [`sh_quote`], so
-/// spaces, quotes, `$VAR`, `$()`, and newlines inside an argument are literal
-/// and cannot expand or inject. The host environment is never passed through.
+/// The script `cd`s into the resolved working directory, then `exec env -i`
+/// with only the resolved environment snapshot followed by the argument array.
+/// Every word is single-quoted with [`sh_quote`], so spaces, quotes, `$VAR`,
+/// `$()`, and newlines inside an argument are literal and cannot expand or
+/// inject. The host environment is never passed through. Callers must already
+/// have refused plans carrying marked secrets.
 #[cfg(target_os = "macos")]
 #[must_use]
-fn build_terminal_script(spec: &CommandSpec, cwd: Option<&Path>) -> String {
-    let mut script = String::new();
-    if let Some(dir) = cwd {
-        script.push_str("cd ");
-        script.push_str(&sh_quote(&dir.to_string_lossy()));
-        script.push_str("; ");
-    }
-    script.push_str("exec env -i");
-    for (key, value) in spec.env.build() {
+fn build_terminal_script(plan: &ResolvedPlan) -> String {
+    let mut script = format!("cd {}; exec env -i", sh_quote(&plan.cwd.to_string_lossy()));
+    for (key, value) in &plan.env {
         script.push(' ');
         script.push_str(&sh_quote(&format!("{key}={value}")));
     }
-    for arg in &spec.argv {
+    for arg in &plan.argv {
         script.push(' ');
         script.push_str(&sh_quote(arg));
     }
@@ -275,8 +270,8 @@ fn applescript_quote(input: &str) -> String {
 /// error instead of a false "spawned" report. The command itself is untracked:
 /// the runner does not wait on it, and no timeout or cancellation applies.
 #[cfg(target_os = "macos")]
-async fn spawn_visible_terminal(spec: &CommandSpec, cwd: Option<&Path>) -> Result<(), String> {
-    let script = build_terminal_script(spec, cwd);
+async fn spawn_visible_terminal(plan: &ResolvedPlan) -> Result<(), String> {
+    let script = build_terminal_script(plan);
     let apple = format!(
         "tell application \"Terminal\" to do script {}",
         applescript_quote(&script)
@@ -306,14 +301,12 @@ async fn spawn_visible_terminal(spec: &CommandSpec, cwd: Option<&Path>) -> Resul
 /// The fallback spawns the command untracked with the sanitized environment;
 /// like the macOS path it claims no timeout or cancellation coverage.
 #[cfg(not(target_os = "macos"))]
-async fn spawn_visible_terminal(spec: &CommandSpec, cwd: Option<&Path>) -> Result<(), String> {
-    let mut command = tokio::process::Command::new(&spec.argv[0]);
-    command.args(&spec.argv[1..]);
-    if let Some(dir) = cwd {
-        command.current_dir(dir);
-    }
+async fn spawn_visible_terminal(plan: &ResolvedPlan) -> Result<(), String> {
+    let mut command = tokio::process::Command::new(&plan.argv[0]);
+    command.args(&plan.argv[1..]);
+    command.current_dir(&plan.cwd);
     command.env_clear();
-    for (key, value) in spec.env.build() {
+    for (key, value) in &plan.env {
         command.env(key, value);
     }
     match command.spawn() {
@@ -356,19 +349,13 @@ fn kill_process_group(child: &tokio::process::Child) {
 fn kill_process_group(_child: &tokio::process::Child) {}
 
 /// Tracks a background command to completion, timeout, or cancellation.
-async fn run_background(
-    spec: &CommandSpec,
-    token: &CancellationToken,
-    cwd: Option<&Path>,
-) -> CommandOutput {
-    let mut command = tokio::process::Command::new(&spec.argv[0]);
-    command.args(&spec.argv[1..]);
-    if let Some(dir) = cwd {
-        command.current_dir(dir);
-    }
-    // Sanitized environment: clear the host env and rebuild from the spec.
+async fn run_background(plan: &ResolvedPlan, token: &CancellationToken) -> CommandOutput {
+    let mut command = tokio::process::Command::new(&plan.argv[0]);
+    command.args(&plan.argv[1..]);
+    command.current_dir(&plan.cwd);
+    // Sanitized environment: clear the host env and apply the plan snapshot.
     command.env_clear();
-    for (key, value) in spec.env.build() {
+    for (key, value) in &plan.env {
         command.env(key, value);
     }
     command.kill_on_drop(true);
@@ -382,7 +369,7 @@ async fn run_background(
             return CommandOutput {
                 status: RunStatus::StartError(format!(
                     "failed to spawn `{}`: {error}",
-                    spec.argv[0]
+                    plan.argv[0]
                 )),
                 stdout: String::new(),
                 stderr: String::new(),
@@ -393,7 +380,7 @@ async fn run_background(
     let stdout = tokio::spawn(read_capped(child.stdout.take(), OUTPUT_CAP));
     let stderr = tokio::spawn(read_capped(child.stderr.take(), OUTPUT_CAP));
 
-    let timeout = tokio::time::sleep(spec.timeout);
+    let timeout = tokio::time::sleep(plan.timeout);
     tokio::pin!(timeout);
 
     tokio::select! {
@@ -431,24 +418,30 @@ async fn run_background(
     }
 }
 
-/// Reads a piped stream up to `cap` bytes, returning the lossy text.
+/// Reads a piped stream, storing at most `cap` bytes while continuing to drain
+/// the rest.
+///
+/// The pipe is drained to EOF so a high-output child never hits EPIPE/SIGPIPE
+/// because we closed its stdout early; the stored buffer is exactly `cap` bytes
+/// (never overshoots a non-chunk-aligned cap).
 async fn read_capped<R: AsyncRead + Unpin>(reader: Option<R>, cap: usize) -> String {
     let Some(mut reader) = reader else {
         return String::new();
     };
-    let mut bytes = Vec::with_capacity(cap.min(8192));
+    let mut stored = Vec::with_capacity(cap.min(8192));
     let mut chunk = [0u8; 8192];
     loop {
         let read = reader.read(&mut chunk).await.unwrap_or(0);
         if read == 0 {
             break;
         }
-        bytes.extend_from_slice(&chunk[..read]);
-        if bytes.len() >= cap {
-            break;
+        let remaining = cap.saturating_sub(stored.len());
+        if remaining > 0 {
+            let take = read.min(remaining);
+            stored.extend_from_slice(&chunk[..take]);
         }
     }
-    String::from_utf8_lossy(&bytes).into_owned()
+    String::from_utf8_lossy(&stored).into_owned()
 }
 
 #[cfg(test)]
@@ -463,6 +456,12 @@ mod tests {
                 .collect(),
         )
         .with_open_terminal(false)
+    }
+
+    /// A harmless imported command that is still confirmation-risk (`sh` is
+    /// not an approved CLI, so an imported `sh` needs review).
+    fn imported_harmless() -> CommandSpec {
+        background("/bin/sh", &["-c", "printf ok"]).with_imported(true)
     }
 
     #[tokio::test]
@@ -533,38 +532,40 @@ mod tests {
     async fn a_direct_imported_confirmation_run_is_refused_until_approved() {
         let runner = CommandRunner::new();
         let token = CancellationToken::new();
-        let spec = CommandSpec::new(vec!["rm".into(), "-rf".into(), "/tmp/nonexistent".into()])
-            .with_imported(true)
-            .with_open_terminal(false);
+        let spec = imported_harmless();
 
+        let plan = spec.resolve(None).expect("plan resolves");
         let first = runner.run(&spec, &token, None).await;
         let RunStatus::ApprovalRequired(review_id) = first.status else {
             panic!("an imported confirmation command must not run before approval");
         };
         assert_eq!(first.stdout, "");
 
-        let approved = runner.approve(&review_id).expect("approval succeeds");
-        assert_eq!(approved, spec);
+        let approved = runner
+            .approve(review_id.as_str())
+            .expect("approval succeeds");
+        assert_eq!(approved, plan);
 
         let second = runner.run(&spec, &token, None).await;
         assert_eq!(second.status, RunStatus::Succeeded { exit_code: 0 });
+        assert_eq!(second.stdout, "ok");
     }
 
     #[tokio::test]
-    async fn approval_is_bound_to_the_complete_spec_not_the_rendered_command() {
+    async fn approval_is_bound_to_the_complete_plan_not_the_rendered_command() {
         let runner = CommandRunner::new();
         let token = CancellationToken::new();
 
-        let base = CommandSpec::new(vec!["rm".into(), "-rf".into(), "/tmp/nonexistent".into()])
-            .with_imported(true)
-            .with_open_terminal(false);
+        let base = imported_harmless();
         let first = runner.run(&base, &token, None).await;
         let RunStatus::ApprovalRequired(review_id) = first.status else {
             panic!("expected approval to be required");
         };
-        runner.approve(&review_id).expect("approval succeeds");
+        runner
+            .approve(review_id.as_str())
+            .expect("approval succeeds");
 
-        // Mutating any security-relevant field makes a different spec that
+        // Mutating any security-relevant field makes a different plan that
         // must be approved again.
         for mutated in [
             base.clone().with_timeout(Duration::from_secs(1)),
@@ -582,9 +583,67 @@ mod tests {
         }
 
         // The unmutated spec stays approved.
-        assert!(runner.is_approved(&base));
+        assert!(runner.is_approved(&base.resolve(None).expect("plan resolves")));
         let again = runner.run(&base, &token, None).await;
         assert_eq!(again.status, RunStatus::Succeeded { exit_code: 0 });
+    }
+
+    #[tokio::test]
+    async fn approval_does_not_survive_a_change_in_current_project() {
+        let safe = tempfile::tempdir().expect("temp dir");
+        let other = tempfile::tempdir().expect("temp dir");
+        let runner = CommandRunner::new();
+        let token = CancellationToken::new();
+        let spec = imported_harmless().with_cwd(crate::CwdStrategy::CurrentProject);
+
+        let refused_a = runner.run(&spec, &token, Some(safe.path())).await;
+        let RunStatus::ApprovalRequired(review_id) = refused_a.status else {
+            panic!("expected approval in the first project");
+        };
+        runner
+            .approve(review_id.as_str())
+            .expect("approval succeeds");
+
+        // The same spec in another project resolves to a different plan, so it
+        // is refused again even though the rendered command is identical.
+        let refused_b = runner.run(&spec, &token, Some(other.path())).await;
+        assert!(
+            matches!(refused_b.status, RunStatus::ApprovalRequired(_)),
+            "an approval for one project must not run in another"
+        );
+
+        // Running in the approved project succeeds.
+        let ran = runner.run(&spec, &token, Some(safe.path())).await;
+        assert_eq!(ran.status, RunStatus::Succeeded { exit_code: 0 });
+    }
+
+    #[tokio::test]
+    async fn approval_does_not_survive_a_changed_inherited_environment() {
+        let runner = CommandRunner::new();
+        let spec = imported_harmless().with_env(crate::SanitizedEnv::new().inherit("PATH"));
+
+        // Simulate the host PATH changing between approval and run by resolving
+        // the plan directly against two host snapshots.
+        let mut host_a = std::collections::BTreeMap::new();
+        host_a.insert("PATH".to_string(), "/usr/bin".to_string());
+        let mut host_b = std::collections::BTreeMap::new();
+        host_b.insert("PATH".to_string(), "/custom/bin".to_string());
+
+        let plan_a = spec.resolve_with(None, &host_a).expect("plan resolves");
+        let plan_b = spec.resolve_with(None, &host_b).expect("plan resolves");
+        assert_ne!(plan_a, plan_b);
+
+        let ApprovalDecision::Pending(review) = runner.request_approval(&plan_a) else {
+            panic!("imported sh must be confirmation-risk");
+        };
+        runner
+            .approve(review.id.as_str())
+            .expect("approval succeeds");
+        assert!(runner.is_approved(&plan_a));
+        assert!(
+            !runner.is_approved(&plan_b),
+            "an approval must not survive a changed inherited value"
+        );
     }
 
     #[tokio::test]
@@ -619,6 +678,38 @@ mod tests {
             !sentinel.exists(),
             "a descendant of a cancelled command must not outlive it"
         );
+    }
+
+    #[tokio::test]
+    async fn large_output_is_capped_without_failing_the_child() {
+        let runner = CommandRunner::new();
+        let token = CancellationToken::new();
+        // Writes ~1 MiB of output — well over the 64 KiB cap. With the old
+        // behavior the child would hit EPIPE when we stopped reading and be
+        // reported failed; now we drain fully and the child still succeeds.
+        let spec = background("/bin/sh", &["-c", "head -c 1048576 /dev/zero"])
+            .with_env(crate::SanitizedEnv::new().inherit("PATH"));
+
+        let output = runner.run(&spec, &token, None).await;
+        assert_eq!(output.status, RunStatus::Succeeded { exit_code: 0 });
+        assert_eq!(output.stdout.len(), 64 * 1024);
+    }
+
+    #[tokio::test]
+    async fn visible_terminal_runs_reject_marked_secrets() {
+        let runner = CommandRunner::new();
+        let token = CancellationToken::new();
+        let mut env = crate::SanitizedEnv::new().with_var("API_TOKEN", "ghp-super-secret");
+        env.mark_secret("API_TOKEN");
+        let spec = background("/bin/echo", &["hi"])
+            .with_env(env)
+            .with_open_terminal(true);
+
+        let output = runner.run(&spec, &token, None).await;
+        let RunStatus::StartError(message) = output.status else {
+            panic!("a visible-terminal run with marked secrets must be refused");
+        };
+        assert!(message.contains("secrets"));
     }
 
     #[tokio::test]
@@ -672,8 +763,10 @@ mod tests {
     mod macos_visible_terminal {
         use super::*;
 
-        fn spec(argv: &[&str]) -> CommandSpec {
+        fn plan(argv: &[&str]) -> ResolvedPlan {
             CommandSpec::new(argv.iter().map(ToString::to_string).collect())
+                .resolve(None)
+                .expect("plan resolves")
         }
 
         #[test]
@@ -714,32 +807,49 @@ mod tests {
         }
 
         #[test]
-        fn terminal_script_carries_only_the_sanitized_environment() {
+        fn terminal_script_carries_only_the_resolved_environment() {
             let mut env = crate::SanitizedEnv::new().with_var("HOTWIRE_MODE", "safe");
             env.mark_secret("API_TOKEN");
-            let spec = spec(&["/bin/echo", "hi"]).with_env(env);
-            let script = build_terminal_script(&spec, None);
+            let plan = CommandSpec::new(vec!["/bin/echo".to_string(), "hi".to_string()])
+                .with_env(env)
+                .resolve(None)
+                .expect("plan resolves");
+            let script = build_terminal_script(&plan);
 
-            assert_eq!(script, "exec env -i 'HOTWIRE_MODE=safe' '/bin/echo' 'hi'");
+            assert!(script.starts_with("cd "), "the script must cd to the cwd");
+            assert!(
+                script.contains("'HOTWIRE_MODE=safe'"),
+                "the sanitized env must be embedded: {script}"
+            );
+            assert!(
+                !script.contains("API_TOKEN"),
+                "a marked secret must never appear in the generated script: {script}"
+            );
+            assert!(
+                !script.contains("PATH="),
+                "host env must not leak: {script}"
+            );
         }
 
         #[test]
         fn terminal_script_quotes_the_working_directory() {
-            let spec = spec(&["/bin/pwd"]);
-            let script = build_terminal_script(&spec, Some(Path::new("/tmp/My Dir/$HOME")));
+            let plan = CommandSpec::new(vec!["/bin/pwd".to_string()])
+                .with_cwd(crate::CwdStrategy::Fixed("/tmp/My Dir/$HOME".into()))
+                .resolve(None)
+                .expect("plan resolves");
+            let script = build_terminal_script(&plan);
 
-            assert_eq!(script, "cd '/tmp/My Dir/$HOME'; exec env -i '/bin/pwd'");
+            assert!(script.starts_with("cd '/tmp/My Dir/$HOME'; "), "{script}");
         }
 
         #[test]
         fn terminal_script_quotes_every_argument_token() {
-            let spec = spec(&["/bin/sh", "-c", "echo \"$HOME\" $(whoami)"]);
-            let script = build_terminal_script(&spec, None);
+            let plan = plan(&["/bin/sh", "-c", "echo \"$HOME\" $(whoami)"]);
+            let script = build_terminal_script(&plan);
 
-            assert!(script.starts_with("exec env -i "));
-            assert_eq!(
-                script,
-                "exec env -i '/bin/sh' '-c' 'echo \"$HOME\" $(whoami)'"
+            assert!(
+                script.contains("'echo \"$HOME\" $(whoami)'"),
+                "the argument must be a single quoted word: {script}"
             );
         }
 

@@ -140,20 +140,26 @@ The runner owns the review-before-execute and cancellation boundaries. A
 project, or ask — spec §13.3), a `SanitizedEnv` that rebuilds the child
 environment from an allowlist plus explicit variables and tracks secret keys,
 a timeout, and a visible-terminal flag (default on for development commands).
-`classify_command_risk` marks destructive programs and arbitrary imported
-executables as confirmation-risk. `CommandRunner` is the *only* public
-execution path and **enforces** review-before-execute: `ApprovalStore` requires
-the exact structured spec (not just a rendered string) to be approved before an
-imported confirmation-risk command's first run (spec §15.2), and refuses with
-`RunStatus::ApprovalRequired` otherwise. Background commands run in their own
-process group, so a timeout or cancellation kills and reaps the whole tree; the
-visible-terminal path (correct POSIX argv quoting, AppleScript encoding, and
-`env -i` with only the sanitized environment) is explicitly untracked.
-`SafetyLog` writes a closed-field `LogEntry` with a structured `EventDetail` —
-there is no free-text field, so typed text, prompts, paths, and key sequences
-are unrepresentable (spec §15.1/§15.3); raw-event diagnostics are a separate
-opt-in, auto-expiring, never-persisted surface. Derived `Debug` output masks
-secret values. See `docs/safety.md`.
+Before any review or execution the spec is resolved into an immutable
+`ResolvedPlan` — exact working directory and full environment snapshot — so
+approval and execution operate on the same plan. `classify_argv` is
+conservative: destructive programs, destructive argument forms on approved
+CLIs (`git clean -fdx`, `cp -f`), destructive `sh`/`bash`/`zsh` `-c` payloads,
+and arbitrary imported executables are all confirmation-risk. `CommandRunner`
+is the *only* public execution path and **enforces** review-before-execute on
+the resolved plan: `ApprovalStore` refuses an unapproved imported
+confirmation-risk plan with `RunStatus::ApprovalRequired`, so changing the
+project directory or an inherited value forces a new review. Background
+commands run in their own process group, so a timeout or cancellation kills and
+reaps the whole tree; stdout is drained fully past the cap so high-output
+children never hit EPIPE. The visible-terminal path (correct POSIX argv
+quoting, AppleScript encoding, `env -i` with only the resolved environment) is
+explicitly untracked and refuses runs carrying marked secrets. `SafetyLog`
+writes a closed-field `LogEntry` with a structured `EventDetail` and validated
+identifier newtypes — there is no free-text field, so typed text, prompts,
+paths, and key sequences are unrepresentable (spec §15.1/§15.3); raw-event
+diagnostics are a separate opt-in, bounded, auto-expiring, never-persisted
+surface. Derived `Debug` output masks secret values. See `docs/safety.md`.
 
 ### Diagnostics and recovery
 
