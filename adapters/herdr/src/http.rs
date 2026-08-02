@@ -104,9 +104,10 @@ fn content_length(head: &str) -> Option<usize> {
 
 /// Splits a base URL into host, port, and path prefix.
 ///
-/// Only plaintext `http://` targets are accepted. A missing port defaults to
-/// `80`.
-fn parse_base_url(base_url: &str) -> Result<(String, u16, String), String> {
+/// Only plaintext `http://` loopback targets are accepted (`localhost`, the
+/// `127/8` range, or `::1`); a remote host is rejected so the local-API
+/// contract can never point at the network. A missing port defaults to `80`.
+pub(crate) fn parse_base_url(base_url: &str) -> Result<(String, u16, String), String> {
     let rest = base_url.strip_prefix("http://").ok_or_else(|| {
         format!("unsupported base URL `{base_url}`: only `http://` loopback is supported")
     })?;
@@ -126,7 +127,27 @@ fn parse_base_url(base_url: &str) -> Result<(String, u16, String), String> {
     if host.is_empty() {
         return Err(format!("missing host in `{base_url}`"));
     }
+    if !is_loopback_host(&host) {
+        return Err(format!(
+            "`{base_url}` is not a loopback URL; only localhost, 127/8, or ::1 are allowed"
+        ));
+    }
     Ok((host, port, path))
+}
+
+/// Whether `host` is a loopback target: `localhost`, the `127/8` IPv4 range, or
+/// `::1`. Bracketed IPv6 literals (`[::1]`) are accepted.
+#[must_use]
+fn is_loopback_host(host: &str) -> bool {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    if host == "localhost" {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
 }
 
 #[cfg(test)]
@@ -165,6 +186,29 @@ mod tests {
         assert!(parse_base_url("https://127.0.0.1:7398").is_err());
         assert!(parse_base_url("herdr://focus").is_err());
         assert!(parse_base_url("http://127.0.0.1:notaport").is_err());
+    }
+
+    #[test]
+    fn rejects_remote_hosts_even_on_plaintext_http() {
+        assert!(parse_base_url("http://example.com").is_err());
+        assert!(parse_base_url("http://192.168.1.10:7398").is_err());
+        assert!(parse_base_url("http://10.0.0.1:7398").is_err());
+        assert!(parse_base_url("http://169.254.169.254").is_err());
+    }
+
+    #[test]
+    fn accepts_loopback_hosts_including_ipv6() {
+        for url in [
+            "http://localhost:7398",
+            "http://127.0.0.1",
+            "http://127.0.0.2:7398",
+            "http://[::1]:7398",
+        ] {
+            let (host, port, _) =
+                parse_base_url(url).unwrap_or_else(|error| panic!("{url}: {error}"));
+            assert!(!host.is_empty(), "{url}");
+            assert!(port > 0, "{url}");
+        }
     }
 
     #[test]

@@ -114,16 +114,50 @@ export const adapterManifestSchema = z.object({
 export type AdapterManifest = z.infer<typeof adapterManifestSchema>;
 
 /**
+ * Whether a base URL targets loopback only: `localhost`, the `127/8` IPv4
+ * range, or `::1`. Mirrors the Rust loopback check in `adapters/herdr`.
+ */
+export function isLoopbackBaseUrl(value: string): boolean {
+  if (!value.startsWith("http://")) return false;
+  const rest = value.slice("http://".length);
+  const authority = rest.split("/")[0] ?? "";
+  if (authority === "") return false;
+
+  let host = authority;
+  if (host.startsWith("[")) {
+    const end = host.indexOf("]");
+    if (end === -1) return false;
+    host = host.slice(1, end);
+  } else {
+    host = host.split(":")[0] ?? "";
+  }
+
+  if (host === "localhost" || host === "::1") return true;
+
+  const octets = host.split(".");
+  if (octets.length !== 4) return false;
+  return (
+    octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255) &&
+    Number(octets[0]) === 127
+  );
+}
+
+/**
  * Config schema for the Herdr adapter (spec §13.6).
  *
  * Herdr negotiates capabilities and falls back through local API / deep link,
  * then app launch/focus, then a configured shortcut. At least one integration
- * path is required.
+ * path is required, and the local API must be a loopback target.
  */
 export const herdrConfigSchema = z
   .object({
     /** Loopback Herdr API base URL, e.g. `http://127.0.0.1:7398`. */
-    apiBaseUrl: z.string().startsWith("http://").optional(),
+    apiBaseUrl: z
+      .string()
+      .refine(isLoopbackBaseUrl, {
+        message: "must be a loopback http:// URL (localhost, 127/8, or ::1)",
+      })
+      .optional(),
     /** A `herdr://…` deep link opened with the system handler. */
     deepLink: z
       .string()

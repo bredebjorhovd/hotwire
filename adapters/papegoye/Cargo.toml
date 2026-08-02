@@ -18,7 +18,7 @@ thiserror.workspace = true
 hotwire-input-macos = { path = "../../crates/hotwire-input-macos" }
 
 [dev-dependencies]
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 
 [lints]
 workspace = true

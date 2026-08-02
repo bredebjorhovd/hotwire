@@ -222,7 +222,7 @@ async fn validate_rejects_malformed_paths_and_unknown_shortcuts() {
     assert!(result
         .errors
         .iter()
-        .any(|error| error.contains("apiBaseUrl must be a plaintext http://")));
+        .any(|error| error.contains("apiBaseUrl")));
     assert!(result
         .errors
         .iter()
@@ -231,6 +231,23 @@ async fn validate_rejects_malformed_paths_and_unknown_shortcuts() {
         .errors
         .iter()
         .any(|error| error.contains("shortcut `not-a-key` does not resolve")));
+}
+
+#[tokio::test]
+async fn validate_rejects_remote_api_hosts() {
+    let (adapter, _) = build(MockPlatform::new());
+
+    for config in [
+        json!({ "apiBaseUrl": "http://example.com:7398" }),
+        json!({ "apiBaseUrl": "http://192.168.1.10:7398" }),
+    ] {
+        let result = adapter.validate(&config).await;
+        assert!(!result.valid, "config {config} must not validate");
+        assert!(
+            result.errors.iter().any(|error| error.contains("loopback")),
+            "config {config}"
+        );
+    }
 }
 
 #[tokio::test]

@@ -207,7 +207,15 @@ describe("herdrConfigSchema", () => {
 
   it("rejects non-loopback API URLs and scheme-less deep links", () => {
     expect(herdrConfigSchema.safeParse({ apiBaseUrl: "https://example.com" }).success).toBe(false);
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://example.com:7398" }).success).toBe(false);
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://192.168.1.10:7398" }).success).toBe(false);
     expect(herdrConfigSchema.safeParse({ deepLink: "focus" }).success).toBe(false);
+  });
+
+  it("accepts loopback API URLs", () => {
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://localhost:7398" }).success).toBe(true);
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://127.0.0.2:7398" }).success).toBe(true);
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://[::1]:7398" }).success).toBe(true);
   });
 });
 

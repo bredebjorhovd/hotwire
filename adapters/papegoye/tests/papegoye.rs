@@ -12,6 +12,7 @@ use hotwire_adapter_papegoye::{PapegoyeAdapter, PapegoyeError, PapegoyePlatform}
 use hotwire_adapter_sdk::{ActionInvocation, Adapter, AdapterError, ExecutionContext};
 use hotwire_core::{ActionStatus, Trigger};
 use serde_json::{json, Value};
+use tokio::sync::oneshot;
 
 /// Synthetic key events recorded by the mock platform.
 #[derive(Default, Debug)]
@@ -22,9 +23,14 @@ struct MockEvents {
 }
 
 /// A scriptable Papegøye platform that records every injected key event.
+///
+/// `hold_down` is an optional gate: when set, `key_down` blocks on it until the
+/// test releases it, so concurrent-execution races can be reproduced
+/// deterministically.
 struct MockPlatform {
     app_present: bool,
     events: Arc<Mutex<MockEvents>>,
+    hold_down: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
 }
 
 impl MockPlatform {
@@ -32,7 +38,18 @@ impl MockPlatform {
         Self {
             app_present: true,
             events: Arc::new(Mutex::new(MockEvents::default())),
+            hold_down: Arc::new(Mutex::new(None)),
         }
+    }
+
+    fn with_app_present(mut self, present: bool) -> Self {
+        self.app_present = present;
+        self
+    }
+
+    fn with_hold_down(self, receiver: oneshot::Receiver<()>) -> Self {
+        *self.hold_down.lock().expect("hold down lock") = Some(receiver);
+        self
     }
 }
 
@@ -58,6 +75,10 @@ impl PapegoyePlatform for MockPlatform {
     }
 
     async fn key_down(&self, keycode: u16) -> Result<(), PapegoyeError> {
+        let gate = self.hold_down.lock().expect("hold down lock").take();
+        if let Some(gate) = gate {
+            let _ = gate.await;
+        }
         let mut events = self.events.lock().expect("events lock");
         events.downs.push(keycode);
         if !events.held.contains(&keycode) {
@@ -243,8 +264,9 @@ async fn shutdown_release_all_ends_every_in_flight_hold() {
         .execute(&invocation("exec-2", shortcut_config()))
         .await;
 
-    let released = adapter.release_all().await;
-    assert_eq!(released, vec![0x3F, 0x31], "each held key released once");
+    let mut released = adapter.release_all().await;
+    released.sort_unstable();
+    assert_eq!(released, vec![0x31, 0x3F], "each held key released once");
 
     {
         let events = events.lock().expect("events lock");
@@ -313,11 +335,57 @@ async fn detect_reflects_app_availability() {
     let present = PapegoyeAdapter::new(Arc::new(MockPlatform::new()));
     assert!(present.detect().await.detected);
 
-    let absent = PapegoyeAdapter::new(Arc::new(MockPlatform {
-        app_present: false,
-        events: Arc::new(Mutex::new(MockEvents::default())),
-    }));
+    let absent = PapegoyeAdapter::new(Arc::new(MockPlatform::new().with_app_present(false)));
     assert!(!absent.detect().await.detected);
+}
+
+#[tokio::test]
+async fn concurrent_starts_with_the_same_execution_id_reserve_once() {
+    // Gate the first key-down so a second start runs while the first is parked
+    // mid-hold. The reservation must happen before that await: otherwise both
+    // starts observe the execution as absent and double-book the hold counts,
+    // leaving the key logically held after a single release.
+    let (release_tx, release_rx) = oneshot::channel();
+    let platform = MockPlatform::new().with_hold_down(release_rx);
+    let events = platform.events.clone();
+    let adapter = Arc::new(PapegoyeAdapter::new(Arc::new(platform)));
+
+    let first = {
+        let adapter = Arc::clone(&adapter);
+        let invocation = invocation("exec-1", shortcut_config());
+        tokio::spawn(async move { adapter.execute(&invocation).await })
+    };
+    // Let the first task reach its blocked key-down await.
+    tokio::task::yield_now().await;
+
+    let second = {
+        let adapter = Arc::clone(&adapter);
+        let invocation = invocation("exec-1", shortcut_config());
+        tokio::spawn(async move { adapter.execute(&invocation).await })
+    };
+    tokio::task::yield_now().await;
+
+    release_tx.send(()).ok();
+
+    let (first_result, second_result) = tokio::join!(first, second);
+    assert_eq!(
+        first_result.expect("first task ran").status,
+        ActionStatus::Started
+    );
+    assert_eq!(
+        second_result.expect("second task ran").status,
+        ActionStatus::Started
+    );
+
+    // Exactly one hold was booked: a single release fully releases the key.
+    adapter.release("exec-1").await.expect("release succeeds");
+    let events = events.lock().expect("events lock");
+    assert_eq!(events.downs, vec![0x3F, 0x31], "down posted once");
+    assert_eq!(
+        events.ups,
+        vec![0x3F, 0x31],
+        "no stuck key after one release"
+    );
 }
 
 #[tokio::test]

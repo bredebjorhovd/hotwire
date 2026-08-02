@@ -39,6 +39,11 @@ impl AdapterState {
         registry
             .register(Arc::new(PapegoyeAdapter::new(papegoye_platform())))
             .expect("papegoye adapter registers exactly once");
+        Self::with_registry(registry)
+    }
+
+    /// Builds a state around a pre-populated registry (used by tests).
+    fn with_registry(registry: AdapterRegistry) -> Self {
         Self {
             registry,
             active: Mutex::new(HashMap::new()),
@@ -92,9 +97,13 @@ impl AdapterState {
         execution_id: &str,
         physical_code: &str,
     ) -> ActionReceipt {
-        self.finish_tracked(adapter_id, execution_id, physical_code, |_| {
-            self.registry.release(adapter_id, execution_id)
-        })
+        self.finish_tracked(
+            adapter_id,
+            execution_id,
+            physical_code,
+            ActionStatus::Succeeded,
+            |_| self.registry.release(adapter_id, execution_id),
+        )
         .await
     }
 
@@ -105,31 +114,44 @@ impl AdapterState {
         execution_id: &str,
         physical_code: &str,
     ) -> ActionReceipt {
-        self.finish_tracked(adapter_id, execution_id, physical_code, |_| {
-            self.registry.cancel(adapter_id, execution_id)
-        })
+        self.finish_tracked(
+            adapter_id,
+            execution_id,
+            physical_code,
+            ActionStatus::Cancelled,
+            |_| self.registry.cancel(adapter_id, execution_id),
+        )
         .await
     }
 
     /// Ends every tracked execution (used on shutdown).
+    ///
+    /// Successfully released executions are removed from the tracking map so
+    /// the state reflects what is still in flight.
     pub async fn release_active(&self) -> usize {
-        let ids: Vec<(String, String, String)> = self
+        let ids: Vec<(String, String)> = self
             .active
             .lock()
             .expect("active lock")
             .iter()
-            .map(|(id, invocation)| {
-                (
-                    id.clone(),
-                    invocation.adapter_id.clone(),
-                    invocation.binding_id.clone(),
-                )
-            })
+            .map(|(id, invocation)| (id.clone(), invocation.adapter_id.clone()))
             .collect();
-        for (execution_id, adapter_id, _) in &ids {
-            let _ = self.registry.release(adapter_id, execution_id).await;
+        let mut released = 0;
+        for (execution_id, adapter_id) in ids {
+            if self
+                .registry
+                .release(&adapter_id, &execution_id)
+                .await
+                .is_ok()
+            {
+                self.active
+                    .lock()
+                    .expect("active lock")
+                    .remove(&execution_id);
+                released += 1;
+            }
         }
-        ids.len()
+        released
     }
 
     /// Probes one registered adapter for machine-level presence.
@@ -155,11 +177,15 @@ impl AdapterState {
     }
 
     /// Ends or cancels a tracked execution, publishing its completion receipt.
+    ///
+    /// `success_status` is the semantic outcome of a successful finish: a
+    /// `release` completes as `Succeeded`, a `cancel` as `Cancelled`.
     async fn finish_tracked<F, Fut>(
         &self,
         adapter_id: &str,
         execution_id: &str,
         physical_code: &str,
+        success_status: ActionStatus,
         finish: F,
     ) -> ActionReceipt
     where
@@ -182,7 +208,7 @@ impl AdapterState {
         let result = match finish(&invocation).await {
             Ok(()) => ActionResult {
                 execution_id: execution_id.to_string(),
-                status: ActionStatus::Succeeded,
+                status: success_status,
                 message: None,
             },
             Err(error) => ActionResult {
@@ -258,6 +284,8 @@ fn now_nanos() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use hotwire_adapter_sdk::{Adapter, AdapterError, AdapterManifest};
     use serde_json::json;
 
     fn invocation(execution_id: &str) -> ActionInvocation {
@@ -348,5 +376,168 @@ mod tests {
             .message
             .as_deref()
             .is_some_and(|message| message.contains("not registered")));
+    }
+
+    /// A hold adapter that stays `Started` so the shell tracks it, and records
+    /// every cancel/release. Used to exercise receipt semantics without
+    /// touching any real OS side effects.
+    struct TrackingAdapter {
+        manifest: AdapterManifest,
+        cancelled: Mutex<Vec<String>>,
+        released: Mutex<Vec<String>>,
+        fail_release: bool,
+    }
+
+    impl TrackingAdapter {
+        fn new() -> Self {
+            Self {
+                manifest: AdapterManifest {
+                    id: "track".into(),
+                    name: "Track".into(),
+                    version: "0.1.0".into(),
+                    icon: "track".into(),
+                    capabilities: vec!["start".into(), "stop".into(), "cancel".into()],
+                    config_schema: json!({}),
+                },
+                cancelled: Mutex::new(Vec::new()),
+                released: Mutex::new(Vec::new()),
+                fail_release: false,
+            }
+        }
+
+        fn with_failing_release(mut self) -> Self {
+            self.fail_release = true;
+            self
+        }
+    }
+
+    #[async_trait]
+    impl Adapter for TrackingAdapter {
+        fn manifest(&self) -> &AdapterManifest {
+            &self.manifest
+        }
+
+        async fn detect(&self) -> DetectionResult {
+            DetectionResult {
+                id: self.manifest.id.clone(),
+                detected: false,
+                version: None,
+                path: None,
+            }
+        }
+
+        async fn validate(&self, _config: &Value) -> ValidationResult {
+            ValidationResult {
+                valid: true,
+                errors: Vec::new(),
+            }
+        }
+
+        async fn execute(&self, invocation: &ActionInvocation) -> ActionResult {
+            ActionResult {
+                execution_id: invocation.execution_id.clone(),
+                status: ActionStatus::Started,
+                message: Some("tracked".into()),
+            }
+        }
+
+        async fn cancel(&self, execution_id: &str) -> Result<(), AdapterError> {
+            self.cancelled
+                .lock()
+                .expect("lock")
+                .push(execution_id.to_string());
+            Ok(())
+        }
+
+        async fn release(&self, execution_id: &str) -> Result<(), AdapterError> {
+            self.released
+                .lock()
+                .expect("lock")
+                .push(execution_id.to_string());
+            if self.fail_release {
+                Err(AdapterError::Other("release failed".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn tracking_state() -> (AdapterState, Arc<TrackingAdapter>) {
+        let adapter: Arc<TrackingAdapter> = Arc::new(TrackingAdapter::new());
+        let mut registry = AdapterRegistry::new();
+        registry
+            .register(Arc::clone(&adapter) as Arc<dyn Adapter>)
+            .expect("registers");
+        (AdapterState::with_registry(registry), adapter)
+    }
+
+    #[tokio::test]
+    async fn release_produces_a_succeeded_receipt_and_cancel_a_cancelled_one() {
+        let (state, adapter) = tracking_state();
+
+        let started = state
+            .run("track", "voice.input", Trigger::Hold, json!({}), "Numpad0")
+            .await;
+        assert_eq!(started.status, ActionStatus::Started);
+        let cancelled = state
+            .cancel("track", &started.execution_id, "Numpad0")
+            .await;
+        assert_eq!(cancelled.status, ActionStatus::Cancelled);
+        assert_eq!(
+            adapter.cancelled.lock().expect("lock").as_slice(),
+            std::slice::from_ref(&started.execution_id)
+        );
+
+        let started = state
+            .run("track", "voice.input", Trigger::Hold, json!({}), "Numpad0")
+            .await;
+        let released = state
+            .release("track", &started.execution_id, "Numpad0")
+            .await;
+        assert_eq!(released.status, ActionStatus::Succeeded);
+        assert_eq!(
+            adapter.released.lock().expect("lock").as_slice(),
+            std::slice::from_ref(&started.execution_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_release_yields_a_failed_receipt() {
+        let adapter: Arc<TrackingAdapter> = Arc::new(TrackingAdapter::new().with_failing_release());
+        let mut registry = AdapterRegistry::new();
+        registry
+            .register(Arc::clone(&adapter) as Arc<dyn Adapter>)
+            .expect("registers");
+        let state = AdapterState::with_registry(registry);
+
+        let started = state
+            .run("track", "voice.input", Trigger::Hold, json!({}), "Numpad0")
+            .await;
+        let released = state
+            .release("track", &started.execution_id, "Numpad0")
+            .await;
+        assert_eq!(released.status, ActionStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn release_active_clears_successfully_released_executions() {
+        let (state, _) = tracking_state();
+
+        let first = state
+            .run("track", "voice.input", Trigger::Hold, json!({}), "Numpad0")
+            .await;
+        let _second = state
+            .run("track", "voice.input", Trigger::Hold, json!({}), "Numpad1")
+            .await;
+
+        assert_eq!(state.release_active().await, 2);
+
+        // The tracking map now reflects reality: nothing is still in flight.
+        let after = state.release("track", &first.execution_id, "Numpad0").await;
+        assert_eq!(after.status, ActionStatus::Failed);
+        assert!(after
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("no active execution")));
     }
 }

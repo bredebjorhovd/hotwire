@@ -241,10 +241,8 @@ impl Adapter for HerdrAdapter {
             );
         }
         if let Some(base_url) = &parsed.api_base_url {
-            if !base_url.starts_with("http://") {
-                errors.push(format!(
-                    "apiBaseUrl must be a plaintext http:// loopback URL, got `{base_url}`"
-                ));
+            if let Err(message) = crate::http::parse_base_url(base_url) {
+                errors.push(format!("apiBaseUrl: {message}"));
             }
         }
         if let Some(deep_link) = &parsed.deep_link {

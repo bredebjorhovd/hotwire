@@ -163,20 +163,18 @@ impl PapegoyeAdapter {
 
     /// Posts a key-down for `combo`, tracking it so the release is exact.
     ///
-    /// Keycodes already held by another execution are skipped so a repeated
-    /// down is never posted. On a partial failure the successfully posted
-    /// downs are released again (fail-open).
+    /// The execution is reserved atomically (before any `await`), so two
+    /// concurrent starts of the same execution id cannot both observe it
+    /// absent and double-book the reference counts. Keycodes already held by
+    /// another execution are skipped so a repeated down is never posted. On a
+    /// partial failure the reservation is rolled back and the successfully
+    /// posted downs are released again (fail-open).
     async fn start_hold(&self, execution_id: &str, combo: &KeyCombo) -> ActionResult {
-        if self
-            .active
-            .lock()
-            .expect("active lock")
-            .contains_key(execution_id)
-        {
-            return start_result(execution_id);
-        }
-
         let to_down = {
+            let mut active = self.active.lock().expect("active lock");
+            if active.contains_key(execution_id) {
+                return start_result(execution_id);
+            }
             let mut held = self.held.lock().expect("held lock");
             let mut to_down = Vec::new();
             for code in combo.all_keycodes() {
@@ -186,6 +184,7 @@ impl PapegoyeAdapter {
                     to_down.push(code);
                 }
             }
+            active.insert(execution_id.to_string(), combo.clone());
             to_down
         };
 
@@ -194,17 +193,8 @@ impl PapegoyeAdapter {
             match self.platform.key_down(*code).await {
                 Ok(()) => posted.push(*code),
                 Err(error) => {
-                    {
-                        let mut held = self.held.lock().expect("held lock");
-                        for code in combo.all_keycodes() {
-                            if let Some(count) = held.get_mut(&code) {
-                                *count = count.saturating_sub(1);
-                            }
-                        }
-                    }
-                    for code in &posted {
-                        let _ = self.platform.key_up(*code).await;
-                    }
+                    self.roll_back_reservation(execution_id, combo, &posted)
+                        .await;
                     return failed_result(
                         execution_id,
                         format!("could not press the push-to-talk key: {error}"),
@@ -213,11 +203,27 @@ impl PapegoyeAdapter {
             }
         }
 
-        self.active
-            .lock()
-            .expect("active lock")
-            .insert(execution_id.to_string(), combo.clone());
         start_result(execution_id)
+    }
+
+    /// Removes the reservation made by [`PapegoyeAdapter::start_hold`] and
+    /// releases exactly the keys this execution had already posted.
+    async fn roll_back_reservation(&self, execution_id: &str, combo: &KeyCombo, posted: &[u16]) {
+        {
+            let mut active = self.active.lock().expect("active lock");
+            active.remove(execution_id);
+        }
+        {
+            let mut held = self.held.lock().expect("held lock");
+            for code in combo.all_keycodes() {
+                if let Some(count) = held.get_mut(&code) {
+                    *count = count.saturating_sub(1);
+                }
+            }
+        }
+        for code in posted.iter().rev() {
+            let _ = self.platform.key_up(*code).await;
+        }
     }
 
     /// Sends a complete press (down then up) for a `press`-triggered binding.

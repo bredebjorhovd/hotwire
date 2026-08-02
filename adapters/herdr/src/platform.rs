@@ -95,7 +95,7 @@ pub mod macos {
 
     use async_trait::async_trait;
     use hotwire_adapter_sdk::KeyCombo;
-    use hotwire_input_macos::{from_physical_name, InjectError, MacEventInjector, INJECTED_MARKER};
+    use hotwire_input_macos::{from_physical_name, MacEventInjector, INJECTED_MARKER};
 
     use super::{HerdrError, HerdrPlatform, ACTIONS_PATH, CAPABILITIES_PATH};
     use crate::http::http_request;
@@ -168,7 +168,9 @@ pub mod macos {
         }
 
         async fn open_deep_link(&self, url: &str) -> Result<(), HerdrError> {
-            run_open(url).map_err(|error| HerdrError::DeepLink(error.to_string()))
+            // A URL is always a single argv value so spaces and shell
+            // metacharacters cannot be reinterpreted.
+            run_open(&[url.to_string()]).map_err(|error| HerdrError::DeepLink(error.to_string()))
         }
 
         fn app_available(&self, bundle_id: Option<&str>, app_path: Option<&str>) -> bool {
@@ -180,12 +182,19 @@ pub mod macos {
             let Some(bundle_id) = bundle_id else {
                 return false;
             };
+            // `mdfind` exits 0 even when nothing matches, so presence requires
+            // both a successful exit and non-empty output.
             Command::new("mdfind")
                 .args(["kMDItemCFBundleIdentifier", "==", &format!("'{bundle_id}'")])
-                .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success())
+                .output()
+                .is_ok_and(|output| {
+                    output.status.success()
+                        && !std::str::from_utf8(&output.stdout)
+                            .unwrap_or_default()
+                            .trim()
+                            .is_empty()
+                })
         }
 
         async fn launch_or_focus(
@@ -193,16 +202,10 @@ pub mod macos {
             bundle_id: Option<&str>,
             app_path: Option<&str>,
         ) -> Result<(), HerdrError> {
-            let outcome = match (bundle_id, app_path) {
-                (_, Some(path)) => run_open(path),
-                (Some(bundle_id), None) => run_open(&format!("-a {bundle_id}")),
-                (None, None) => {
-                    return Err(HerdrError::Launch(
-                        "no bundle id or app path configured".to_string(),
-                    ))
-                }
-            };
-            outcome.map_err(|error| HerdrError::Launch(error.to_string()))
+            let args = open_argv(bundle_id, app_path).ok_or_else(|| {
+                HerdrError::Launch("no bundle id or app path configured".to_string())
+            })?;
+            run_open(&args).map_err(|error| HerdrError::Launch(error.to_string()))
         }
 
         fn resolve_shortcut(&self, shortcut: &str) -> Option<KeyCombo> {
@@ -213,37 +216,84 @@ pub mod macos {
             let combo = self
                 .resolve_shortcut(shortcut)
                 .ok_or_else(|| HerdrError::ShortcutResolve(shortcut.to_string()))?;
-            for code in &combo.modifiers {
-                self.injector
-                    .key_down(*code)
-                    .map_err(|e| shortcut_error(&e))?;
-            }
-            self.injector
-                .key_down(combo.key)
-                .map_err(|e| shortcut_error(&e))?;
-            self.injector
-                .key_up(combo.key)
-                .map_err(|e| shortcut_error(&e))?;
-            for code in combo.modifiers.iter().rev() {
-                self.injector
-                    .key_up(*code)
-                    .map_err(|e| shortcut_error(&e))?;
-            }
-            Ok(())
+            send_combo(&self.injector, &combo)
         }
     }
 
-    fn shortcut_error(error: &InjectError) -> HerdrError {
-        HerdrError::Shortcut(error.to_string())
+    /// A minimal key-posting seam so shortcut injection can be exercised
+    /// without a real Quartz injector.
+    pub(crate) trait ShortcutPoster {
+        /// Posts a synthetic key-down.
+        fn post_down(&self, keycode: u16) -> Result<(), String>;
+        /// Posts a synthetic key-up.
+        fn post_up(&self, keycode: u16) -> Result<(), String>;
     }
 
-    fn run_open(target: &str) -> Result<(), std::io::Error> {
-        let status = Command::new("open").arg(target).status()?;
+    impl ShortcutPoster for MacEventInjector {
+        fn post_down(&self, keycode: u16) -> Result<(), String> {
+            self.key_down(keycode).map_err(|error| error.to_string())
+        }
+
+        fn post_up(&self, keycode: u16) -> Result<(), String> {
+            self.key_up(keycode).map_err(|error| error.to_string())
+        }
+    }
+
+    /// Posts a shortcut down and up through `keys`.
+    ///
+    /// On any partial failure the keys already posted are released again in
+    /// reverse order (fail-open, spec §15.5) so a key-down error can never
+    /// leave a logical key held.
+    fn send_combo(keys: &impl ShortcutPoster, combo: &KeyCombo) -> Result<(), HerdrError> {
+        let mut posted = Vec::new();
+        for code in combo.all_keycodes() {
+            match keys.post_down(code) {
+                Ok(()) => posted.push(code),
+                Err(error) => {
+                    release_posted(keys, &posted);
+                    return Err(shortcut_error_string(error));
+                }
+            }
+        }
+        for code in combo.all_keycodes().iter().rev() {
+            if let Err(error) = keys.post_up(*code) {
+                release_posted(keys, &posted);
+                return Err(shortcut_error_string(error));
+            }
+        }
+        Ok(())
+    }
+
+    /// Best-effort release of every posted key, in reverse order.
+    fn release_posted(keys: &impl ShortcutPoster, posted: &[u16]) {
+        for code in posted.iter().rev() {
+            let _ = keys.post_up(*code);
+        }
+    }
+
+    /// The argv for `/usr/bin/open`, modeled structurally so a path or URL
+    /// stays a single safe argument and a bundle id is passed as `-b <id>`.
+    #[must_use]
+    fn open_argv(bundle_id: Option<&str>, app_path: Option<&str>) -> Option<Vec<String>> {
+        match (bundle_id, app_path) {
+            (_, Some(path)) => Some(vec![path.to_string()]),
+            (Some(bundle_id), None) => Some(vec!["-b".to_string(), bundle_id.to_string()]),
+            (None, None) => None,
+        }
+    }
+
+    fn shortcut_error_string(error: String) -> HerdrError {
+        HerdrError::Shortcut(error)
+    }
+
+    fn run_open(args: &[String]) -> Result<(), std::io::Error> {
+        let status = Command::new("open").args(args).status()?;
         if status.success() {
             Ok(())
         } else {
             Err(std::io::Error::other(format!(
-                "`open {target}` exited with {status}"
+                "`open {}` exited with {status}",
+                args.join(" ")
             )))
         }
     }
@@ -258,6 +308,145 @@ pub mod macos {
                     .map(ToString::to_string)
             })
             .unwrap_or_else(|| "local".to_string())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::cell::{Cell, RefCell};
+
+        use hotwire_adapter_sdk::KeyCombo;
+
+        use super::{open_argv, send_combo, MacHerdrPlatform, ShortcutPoster};
+        use crate::platform::HerdrPlatform;
+
+        /// A poster that records every call and fails once on a chosen
+        /// 1-indexed down or up call, so partial-injection failures can be
+        /// reproduced deterministically.
+        struct FailingPoster {
+            downs: RefCell<Vec<u16>>,
+            ups: RefCell<Vec<u16>>,
+            fail_down_on: Cell<Option<usize>>,
+            fail_up_on: Cell<Option<usize>>,
+        }
+
+        impl FailingPoster {
+            fn new() -> Self {
+                Self {
+                    downs: RefCell::new(Vec::new()),
+                    ups: RefCell::new(Vec::new()),
+                    fail_down_on: Cell::new(None),
+                    fail_up_on: Cell::new(None),
+                }
+            }
+
+            fn fail_down_on(self, call: usize) -> Self {
+                self.fail_down_on.set(Some(call));
+                self
+            }
+
+            fn fail_up_on(self, call: usize) -> Self {
+                self.fail_up_on.set(Some(call));
+                self
+            }
+        }
+
+        impl ShortcutPoster for FailingPoster {
+            fn post_down(&self, keycode: u16) -> Result<(), String> {
+                let next = self.downs.borrow().len() + 1;
+                if self.fail_down_on.get() == Some(next) {
+                    self.fail_down_on.set(None);
+                    return Err(format!("down {next} failed"));
+                }
+                self.downs.borrow_mut().push(keycode);
+                Ok(())
+            }
+
+            fn post_up(&self, keycode: u16) -> Result<(), String> {
+                let next = self.ups.borrow().len() + 1;
+                if self.fail_up_on.get() == Some(next) {
+                    self.fail_up_on.set(None);
+                    return Err(format!("up {next} failed"));
+                }
+                self.ups.borrow_mut().push(keycode);
+                Ok(())
+            }
+        }
+
+        #[test]
+        fn open_argv_models_bundle_id_and_path_separately() {
+            assert_eq!(
+                open_argv(Some("dev.herdr.app"), None),
+                Some(vec!["-b".to_string(), "dev.herdr.app".to_string()])
+            );
+            // A path stays one argv value even with spaces.
+            assert_eq!(
+                open_argv(None, Some("/Applications/My Herdr.app")),
+                Some(vec!["/Applications/My Herdr.app".to_string()])
+            );
+            assert_eq!(open_argv(None, None), None);
+        }
+
+        #[test]
+        fn mdfind_requires_non_empty_output_for_app_presence() {
+            // A bundle id that cannot exist must never report as installed,
+            // even though `mdfind` exits 0 with no matches.
+            let platform = MacHerdrPlatform::new();
+            assert!(!platform
+                .app_available(Some("com.hotwire.definitely-not-an-installed-bundle"), None));
+        }
+
+        #[test]
+        fn send_combo_releases_posted_keys_in_reverse_on_partial_down_failure() {
+            let combo = KeyCombo {
+                modifiers: vec![0x3F, 0x37],
+                key: 0x31,
+            };
+            let poster = FailingPoster::new().fail_down_on(3); // the key itself fails
+
+            let result = send_combo(&poster, &combo);
+            assert!(matches!(
+                result,
+                Err(crate::platform::HerdrError::Shortcut(_))
+            ));
+            assert_eq!(poster.downs.borrow().as_slice(), &[0x3F, 0x37]);
+            assert_eq!(
+                poster.ups.borrow().as_slice(),
+                &[0x37, 0x3F],
+                "modifiers already posted are released in reverse"
+            );
+        }
+
+        #[test]
+        fn send_combo_releases_everything_on_a_partial_up_failure() {
+            let combo = KeyCombo {
+                modifiers: vec![0x3F, 0x37],
+                key: 0x31,
+            };
+            // The first key-up (reverse order: key first) fails.
+            let poster = FailingPoster::new().fail_up_on(1);
+
+            let result = send_combo(&poster, &combo);
+            assert!(result.is_err());
+            assert_eq!(poster.downs.borrow().as_slice(), &[0x3F, 0x37, 0x31]);
+            assert_eq!(
+                poster.ups.borrow().as_slice(),
+                &[0x31, 0x37, 0x3F],
+                "every posted key is released in reverse"
+            );
+        }
+
+        #[test]
+        fn send_combo_succeeds_and_releases_in_reverse_order() {
+            let combo = KeyCombo {
+                modifiers: vec![0x3F, 0x37],
+                key: 0x31,
+            };
+            let poster = FailingPoster::new();
+
+            assert!(send_combo(&poster, &combo).is_ok());
+            assert_eq!(poster.downs.borrow().as_slice(), &[0x3F, 0x37, 0x31]);
+            assert_eq!(poster.ups.borrow().as_slice(), &[0x31, 0x37, 0x3F]);
+        }
     }
 }
 
