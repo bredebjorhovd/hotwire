@@ -10,14 +10,20 @@
 //! and cancel/release every active adapter hold — so no key stays logically
 //! held and no action keeps running. Recovery ordering is fail-open: capture is
 //! stopped first so no new input can start actions while we unwind, then the
-//! active adapter holds are released. [`AdapterState`] serializes that release
-//! against any in-progress start (waits for it, then releases everything) and
-//! rejects fresh adapter starts while paused or stopped. Every lifecycle
-//! operation is idempotent: a second pause or shutdown releases nothing — but a
-//! hold whose release previously failed stays tracked and is retried. When
-//! shell executions land (the `hotwire-runner` `CommandRunner`), the same
-//! lifecycle is the single place their cancellations join the adapter holds and
-//! the tap.
+//! active adapter holds are released.
+//!
+//! Each complete lifecycle operation — pause, resume, shutdown — is serialized
+//! behind one [`RecoveryGate`] owned by the shell, so the tap transition and
+//! the adapter pause/shutdown state always move together. A concurrent resume
+//! can never read `is_stopped()` as false and then restart capture after a
+//! shutdown has already stopped the shell. Inside that gate,
+//! [`AdapterState`] serializes the release against any in-progress start
+//! (waits for it, then releases everything) and rejects fresh adapter starts
+//! while paused or stopped. Every lifecycle operation is idempotent: a second
+//! pause or shutdown releases nothing — but a hold whose release previously
+//! failed stays tracked and is retried. When shell executions land (the
+//! `hotwire-runner` `CommandRunner`), the same lifecycle is the single place
+//! their cancellations join the adapter holds and the tap.
 
 use std::sync::Mutex;
 
@@ -34,6 +40,11 @@ pub const PAUSE_LABEL: &str = "Pause capture";
 /// Label shown while capture is paused.
 pub const RESUME_LABEL: &str = "Resume capture";
 
+/// Serializes each complete ShellState lifecycle operation (tap transition
+/// plus adapter pause/resume/shutdown) so the two recovery surfaces can never
+/// diverge under concurrency.
+pub type RecoveryGate = tokio::sync::Mutex<()>;
+
 /// Process-wide state managed by the Tauri shell.
 pub struct ShellState {
     /// The shared macOS capture tap (created but not started by default).
@@ -44,6 +55,8 @@ pub struct ShellState {
     pub last_receipt: Mutex<Option<ActionReceipt>>,
     /// The adapter execution surface (ADP-001 vertical slice).
     pub adapters: AdapterState,
+    /// Serializes the pause/resume/shutdown lifecycle (tap + adapter).
+    recovery: RecoveryGate,
 }
 
 impl ShellState {
@@ -60,6 +73,7 @@ impl ShellState {
             pause_item,
             last_receipt: Mutex::new(None),
             adapters,
+            recovery: RecoveryGate::default(),
         }
     }
 
@@ -74,7 +88,7 @@ impl ShellState {
     ///
     /// Returns how many adapter holds were released.
     pub async fn pause(&self) -> usize {
-        let released = pause_recovery(&self.tap, &self.adapters).await;
+        let released = pause_recovery(&self.tap, &self.adapters, &self.recovery).await;
         sync_pause_label(&self.pause_item, self.tap.is_paused());
         released
     }
@@ -83,7 +97,7 @@ impl ShellState {
     ///
     /// Returns the new paused state (`false` when resumed).
     pub async fn resume(&self) -> bool {
-        let paused = resume_recovery(&self.tap, &self.adapters).await;
+        let paused = resume_recovery(&self.tap, &self.adapters, &self.recovery).await;
         sync_pause_label(&self.pause_item, paused);
         paused
     }
@@ -93,25 +107,39 @@ impl ShellState {
     ///
     /// Returns how many adapter holds were released.
     pub async fn shutdown(&self) -> usize {
-        shutdown_recovery(&self.tap, &self.adapters).await
+        shutdown_recovery(&self.tap, &self.adapters, &self.recovery).await
     }
 }
 
 /// Pauses recovery across both surfaces, testable without a window or menu.
 ///
-/// Fail-open ordering: capture is paused before any adapter hold is released.
-/// The adapter surface gates fresh starts and releases every active hold,
-/// waiting for any in-progress start first. Idempotent via the tracking map:
-/// a second pause releases nothing, but retries holds whose release failed.
-pub async fn pause_recovery(tap: &QuartzEventTap, adapters: &AdapterState) -> usize {
+/// The whole operation — stop capture on the tap, then gate the adapter
+/// surface and release every active hold — runs behind `gate`, so a concurrent
+/// resume/shutdown can never interleave the two surfaces. Fail-open ordering:
+/// capture is paused before any adapter hold is released. The adapter surface
+/// waits for any in-progress start first. Idempotent via the tracking map: a
+/// second pause releases nothing, but retries holds whose release failed.
+pub async fn pause_recovery(
+    tap: &QuartzEventTap,
+    adapters: &AdapterState,
+    gate: &RecoveryGate,
+) -> usize {
+    let _gate = gate.lock().await;
     pause_capture(tap);
     adapters.pause().await
 }
 
 /// Resumes recovery on the tap, re-enabling adapter starts before capture.
 ///
-/// A stopped shell stays stopped — nothing re-enables starts after shutdown.
-pub async fn resume_recovery(tap: &QuartzEventTap, adapters: &AdapterState) -> bool {
+/// The whole operation runs behind `gate` so a concurrent shutdown cannot stop
+/// the tap between the `is_stopped()` check and `resume_capture`. A stopped
+/// shell stays stopped — nothing re-enables starts after shutdown.
+pub async fn resume_recovery(
+    tap: &QuartzEventTap,
+    adapters: &AdapterState,
+    gate: &RecoveryGate,
+) -> bool {
+    let _gate = gate.lock().await;
     if adapters.is_stopped() {
         return tap.is_paused();
     }
@@ -121,12 +149,21 @@ pub async fn resume_recovery(tap: &QuartzEventTap, adapters: &AdapterState) -> b
 
 /// Shutdown recovery across both surfaces, testable without a window or menu.
 ///
-/// Fail-open ordering: the tap is stopped (which releases any keys it
-/// injected) before active adapter holds are cancelled. Adapter starts are
-/// disabled permanently and every active hold is released, with in-progress
-/// starts waited out first. Idempotent via the tracking map.
-pub async fn shutdown_recovery(tap: &QuartzEventTap, adapters: &AdapterState) -> usize {
+/// The whole operation runs behind `gate` so no stale resume can restart
+/// capture mid-shutdown. Fail-open ordering: the tap is stopped (which
+/// releases any keys it injected) and the emergency pause is engaged before
+/// active adapter holds are cancelled, so a stopped shell is never left with
+/// capture un-paused. Adapter starts are disabled permanently and every active
+/// hold is released, with in-progress starts waited out first. Idempotent via
+/// the tracking map.
+pub async fn shutdown_recovery(
+    tap: &QuartzEventTap,
+    adapters: &AdapterState,
+    gate: &RecoveryGate,
+) -> usize {
+    let _gate = gate.lock().await;
     tap.stop();
+    tap.emergency_pause();
     adapters.shutdown().await
 }
 
@@ -279,13 +316,14 @@ mod tests {
     #[tokio::test]
     async fn pause_releases_active_holds_and_is_idempotent() {
         let (tap, adapters, recorded) = recovery_fixture();
+        let gate = RecoveryGate::default();
         let started = start_hold(&adapters).await;
         assert_eq!(started.status, hotwire_core::ActionStatus::Started);
         assert_eq!(adapters.active_count(), 1);
 
         // Pause stops capture and releases the hold, key before modifiers.
         assert!(!tap.is_paused());
-        assert_eq!(pause_recovery(&tap, &adapters).await, 1);
+        assert_eq!(pause_recovery(&tap, &adapters, &gate).await, 1);
         assert!(tap.is_paused(), "capture stops on pause (fail-open)");
         assert_eq!(adapters.active_count(), 0, "no adapter hold survives pause");
         assert_eq!(
@@ -299,7 +337,7 @@ mod tests {
         );
 
         // A second pause releases nothing.
-        assert_eq!(pause_recovery(&tap, &adapters).await, 0);
+        assert_eq!(pause_recovery(&tap, &adapters, &gate).await, 0);
         assert_eq!(
             recorded.ups.lock().expect("lock").len(),
             2,
@@ -310,12 +348,14 @@ mod tests {
     #[tokio::test]
     async fn shutdown_releases_active_holds_and_is_idempotent() {
         let (tap, adapters, recorded) = recovery_fixture();
+        let gate = RecoveryGate::default();
         let started = start_hold(&adapters).await;
         assert_eq!(started.status, hotwire_core::ActionStatus::Started);
         assert_eq!(adapters.active_count(), 1);
 
-        assert_eq!(shutdown_recovery(&tap, &adapters).await, 1);
+        assert_eq!(shutdown_recovery(&tap, &adapters, &gate).await, 1);
         assert_eq!(tap.status(), hotwire_input_macos::TapStatus::Stopped);
+        assert!(tap.is_paused(), "shutdown engages the fail-open pause");
         assert_eq!(
             adapters.active_count(),
             0,
@@ -326,7 +366,7 @@ mod tests {
         assert_eq!(recorded.ups.lock().expect("lock").as_slice(), &[0x31, 0x3F]);
 
         // A second shutdown releases nothing.
-        assert_eq!(shutdown_recovery(&tap, &adapters).await, 0);
+        assert_eq!(shutdown_recovery(&tap, &adapters, &gate).await, 0);
         assert_eq!(
             recorded.ups.lock().expect("lock").len(),
             2,
@@ -337,11 +377,12 @@ mod tests {
     #[tokio::test]
     async fn shutdown_after_pause_is_a_noop() {
         let (tap, adapters, recorded) = recovery_fixture();
+        let gate = RecoveryGate::default();
         start_hold(&adapters).await;
-        assert_eq!(pause_recovery(&tap, &adapters).await, 1);
+        assert_eq!(pause_recovery(&tap, &adapters, &gate).await, 1);
 
         // A later shutdown must not double-release the already-freed holds.
-        assert_eq!(shutdown_recovery(&tap, &adapters).await, 0);
+        assert_eq!(shutdown_recovery(&tap, &adapters, &gate).await, 0);
         assert_eq!(
             recorded.ups.lock().expect("lock").len(),
             2,
@@ -377,5 +418,135 @@ mod tests {
         assert_eq!(summary.adapter_id, "herdr");
         assert_eq!(summary.status, hotwire_core::ActionStatus::Succeeded);
         assert_eq!(summarize_last_receipt(&None), None);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_operations_are_serialized_by_the_recovery_gate() {
+        // While the recovery gate is held, a lifecycle operation must wait —
+        // the mechanism that keeps a resume from reading `is_stopped()` and
+        // then restarting capture while a shutdown is still running.
+        let (tap, adapters, _) = recovery_fixture();
+        let gate = Arc::new(RecoveryGate::default());
+        let tap = Arc::new(tap);
+        let adapters = Arc::new(adapters);
+
+        let held = gate.lock().await;
+        let resume = {
+            let (tap, adapters, gate) =
+                (Arc::clone(&tap), Arc::clone(&adapters), Arc::clone(&gate));
+            tokio::spawn(async move { resume_recovery(&tap, &adapters, &gate).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(
+            !resume.is_finished(),
+            "resume must wait behind the recovery gate"
+        );
+
+        drop(held);
+        resume
+            .await
+            .expect("resume completes after the gate is released");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_resume_and_shutdown_never_leave_capture_unpaused() {
+        // A resume racing a shutdown used to be able to read `is_stopped()` as
+        // false and then restart capture after shutdown had stopped the shell.
+        // Serializing each complete lifecycle operation behind the recovery
+        // gate makes the final state deterministic: adapter stopped and
+        // capture off, however the race interleaves.
+        for _ in 0..30 {
+            let (tap, adapters, _) = recovery_fixture();
+            let gate = Arc::new(RecoveryGate::default());
+            let tap = Arc::new(tap);
+            let adapters = Arc::new(adapters);
+            pause_recovery(&tap, &adapters, &gate).await;
+
+            let barrier = Arc::new(tokio::sync::Barrier::new(3));
+            let resume = {
+                let (tap, adapters, gate, barrier) = (
+                    Arc::clone(&tap),
+                    Arc::clone(&adapters),
+                    Arc::clone(&gate),
+                    Arc::clone(&barrier),
+                );
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    resume_recovery(&tap, &adapters, &gate).await
+                })
+            };
+            let shutdown = {
+                let (tap, adapters, gate, barrier) = (
+                    Arc::clone(&tap),
+                    Arc::clone(&adapters),
+                    Arc::clone(&gate),
+                    Arc::clone(&barrier),
+                );
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    shutdown_recovery(&tap, &adapters, &gate).await
+                })
+            };
+            barrier.wait().await;
+            let _ = tokio::join!(resume, shutdown);
+
+            assert!(adapters.is_stopped(), "shutdown always wins the shell");
+            assert_eq!(
+                tap.status(),
+                hotwire_input_macos::TapStatus::Stopped,
+                "capture is not running after shutdown"
+            );
+            assert!(
+                tap.is_paused(),
+                "a stale resume must not leave capture un-paused"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_pause_and_resume_keep_tap_and_adapter_in_agreement() {
+        // Pause and resume must never diverge the adapter acceptance state from
+        // the tap. Whichever operation completes last wins both surfaces, so
+        // the shell's paused state and the tap's pause flag always agree.
+        for _ in 0..30 {
+            let (tap, adapters, _) = recovery_fixture();
+            let gate = Arc::new(RecoveryGate::default());
+            let tap = Arc::new(tap);
+            let adapters = Arc::new(adapters);
+
+            let barrier = Arc::new(tokio::sync::Barrier::new(3));
+            let pause = {
+                let (tap, adapters, gate, barrier) = (
+                    Arc::clone(&tap),
+                    Arc::clone(&adapters),
+                    Arc::clone(&gate),
+                    Arc::clone(&barrier),
+                );
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    pause_recovery(&tap, &adapters, &gate).await
+                })
+            };
+            let resume = {
+                let (tap, adapters, gate, barrier) = (
+                    Arc::clone(&tap),
+                    Arc::clone(&adapters),
+                    Arc::clone(&gate),
+                    Arc::clone(&barrier),
+                );
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    resume_recovery(&tap, &adapters, &gate).await
+                })
+            };
+            barrier.wait().await;
+            let _ = tokio::join!(pause, resume);
+
+            assert_eq!(
+                adapters.is_paused(),
+                tap.is_paused(),
+                "the adapter acceptance state and the tap must agree"
+            );
+        }
     }
 }
