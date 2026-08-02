@@ -96,10 +96,14 @@ impl Adapter for ToolAdapter {
                 }
                 command.output().await.map_err(|e| e.to_string())
             }
-            ("shortcut", "profile.switch" | "shortcut.send") => Err(
-                "shortcut delivery requires an explicit macOS key-injection configuration"
-                    .into(),
-            ),
+            ("shortcut", "profile.switch" | "shortcut.send") => {
+                let shortcut = invocation
+                    .config
+                    .get("shortcut")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "shortcut config must include `shortcut`".to_string());
+                shortcut.and_then(send_shortcut)
+            }
             _ => Err(format!("unsupported {} action `{}`", self.manifest.id, invocation.action_id)),
         };
         match result {
@@ -123,4 +127,32 @@ impl Adapter for ToolAdapter {
     async fn cancel(&self, execution_id: &str) -> Result<(), AdapterError> {
         Err(AdapterError::UnknownExecution(execution_id.into()))
     }
+}
+
+#[cfg(target_os = "macos")]
+fn send_shortcut(shortcut: &str) -> Result<std::process::Output, String> {
+    use hotwire_input_macos::MacEventInjector;
+    let injector = MacEventInjector::default();
+    let tokens: Vec<&str> = shortcut.split('+').map(str::trim).collect();
+    if tokens.is_empty() || tokens.iter().any(|token| token.is_empty()) {
+        return Err("shortcut must contain non-empty keys".into());
+    }
+    for token in &tokens {
+        injector
+            .key_down_named(token)
+            .map_err(|error| format!("could not press {token}: {error}"))?;
+    }
+    for token in tokens.iter().rev() {
+        injector
+            .key_up_named(token)
+            .map_err(|error| format!("could not release {token}: {error}"))?;
+    }
+    std::process::Command::new("true")
+        .output()
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn send_shortcut(_shortcut: &str) -> Result<std::process::Output, String> {
+    Err("shortcut injection is only available on macOS".into())
 }
