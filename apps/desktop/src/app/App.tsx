@@ -8,10 +8,14 @@ import { Wizard, type WizardChoices } from "../features/wizard/Wizard";
 import {
   emitMockActionReceipt,
   activateProfileYaml,
+  approveReview,
+  denyReview,
+  getPendingReviews,
   getAppStatus,
   isRunningInTauri,
   runAdapterAction,
   type AppStatus,
+  type PendingReview,
 } from "../features/bridge/ipc";
 import { receiptRouteLabel } from "../features/bridge/receipts";
 import { useActionReceipts } from "../features/bridge/useActionReceipts";
@@ -30,10 +34,15 @@ export function App() {
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [sendingMock, setSendingMock] = useState(false);
   const [runningSlice, setRunningSlice] = useState(false);
+  const [reviews, setReviews] = useState<PendingReview[]>([]);
   const receipt = useActionReceipts();
 
   useEffect(() => {
     void getAppStatus().then(setStatus);
+    const refresh = () => void getPendingReviews().then(setReviews);
+    refresh();
+    const timer = window.setInterval(refresh, 2000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const finishSetup = (choices: WizardChoices) => {
@@ -93,6 +102,21 @@ export function App() {
         <span className="header-tools">
           {isRunningInTauri() && (
             <>
+              {reviews.length > 0 && (
+                <span className="review-badge" title={reviews.map((review) => review.command).join("\n")}>
+                  {reviews.length} REVIEW{reviews.length === 1 ? "" : "S"}
+                  {reviews.map((review) => (
+                    <span key={review.id} className="review-actions">
+                      <Button variant="ghost" onClick={() => void approveReview(review.id).then(() => getPendingReviews().then(setReviews))}>
+                        APPROVE
+                      </Button>
+                      <Button variant="ghost" onClick={() => void denyReview(review.id).then(() => getPendingReviews().then(setReviews))}>
+                        DENY
+                      </Button>
+                    </span>
+                  ))}
+                </span>
+              )}
               <Button
                 variant="ghost"
                 onClick={runSlice}

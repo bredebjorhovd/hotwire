@@ -79,6 +79,24 @@ export interface ActionReceipt {
   message?: string | null;
 }
 
+export interface PendingReview {
+  id: string;
+  command: string;
+}
+
+export async function getPendingReviews(): Promise<PendingReview[]> {
+  if (!isRunningInTauri()) return [];
+  return invoke<PendingReview[]>("pending_reviews");
+}
+
+export async function approveReview(id: string): Promise<void> {
+  if (isRunningInTauri()) await invoke("approve_review", { id });
+}
+
+export async function denyReview(id: string): Promise<void> {
+  if (isRunningInTauri()) await invoke("deny_review", { id });
+}
+
 /**
  * Event name for `ActionReceipt` payloads.
  *
