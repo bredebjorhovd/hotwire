@@ -10,10 +10,18 @@ routes:
 - `Numpad5 → OPEN_HERDR → launch or focus Herdr`
 - `Numpad0 hold → VOICE → hold Papegøye push-to-talk`
 
-This repository is the build foundation (BOOT-001): a Tauri 2 + React
-desktop shell, a Rust workspace, shared schema and profile packages, CI, and
-the typed boundaries between input, actions, adapters, and profiles. No
-low-level capture is implemented here yet.
+This repository is the build foundation (BOOT-001) plus the Milestone 0
+interaction prototype (UX-001): a Tauri 2 + React desktop shell, a Rust
+workspace, shared schema and profile packages, CI, and the typed boundaries
+between input, actions, adapters, and profiles. No low-level capture is
+implemented here yet.
+
+The desktop app opens directly into an eight-screen first-run wizard — welcome,
+control surface, permission, hardware capture, starting profile, connected
+tools, live board test, and done — with a tactile numpad signature object,
+dark/light tokens, animated signal-trace route receipts, keyboard navigation
+and reduced-motion support. The prototype is fixture-driven and renders fully
+in the browser (`pnpm dev`); the Rust shell adds the typed IPC boundary.
 
 ## Repository layout
 

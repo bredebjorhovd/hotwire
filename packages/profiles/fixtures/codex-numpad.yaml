@@ -1,0 +1,27 @@
+schemaVersion: 1
+id: codex-numpad
+name: Codex
+controlSurface: numpad
+enabled: true
+bindings:
+  - id: codex-launch
+    physicalCode: Numpad5
+    trigger: press
+    actionId: codex.launch
+    adapterId: codex
+    consumeOriginal: true
+    config: {}
+  - id: codex-continue
+    physicalCode: NumpadEnter
+    trigger: press
+    actionId: agent.continue
+    adapterId: codex
+    consumeOriginal: true
+    config: {}
+  - id: codex-tests
+    physicalCode: Numpad6
+    trigger: press
+    actionId: test.run
+    adapterId: terminal
+    consumeOriginal: true
+    config: {}
