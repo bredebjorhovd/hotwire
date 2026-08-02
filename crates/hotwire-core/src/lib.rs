@@ -13,13 +13,13 @@ pub enum KeyState {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)] // Independent OS modifier flags, not state.
 pub struct ModifierState {
     pub shift: bool,
     pub control: bool,
     pub option: bool,
     pub command: bool,
 }
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PhysicalKeyEvent {
@@ -92,4 +92,3 @@ mod tests {
         assert!(!should_route(&event(false, true)));
     }
 }
-
