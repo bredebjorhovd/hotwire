@@ -15,6 +15,7 @@ tauri-build.workspace = true
 [dependencies]
 hotwire-adapter-sdk = { path = "../../../crates/hotwire-adapter-sdk" }
 hotwire-core = { path = "../../../crates/hotwire-core" }
+hotwire-input-macos = { path = "../../../crates/hotwire-input-macos" }
 hotwire-profile = { path = "../../../crates/hotwire-profile" }
 serde.workspace = true
 serde_json.workspace = true

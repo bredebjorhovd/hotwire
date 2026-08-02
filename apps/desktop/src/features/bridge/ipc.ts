@@ -20,6 +20,43 @@ export interface AppStatus {
   captureAvailable: boolean;
 }
 
+/** Rust `PermissionStatus` (see `crates/hotwire-core`). */
+export type PermissionStatus = "authorized" | "denied";
+
+/** Rust `CaptureStatus` (see `crates/hotwire-core`). */
+export type CaptureStatus =
+  | "stopped"
+  | "running"
+  | "disabled_by_timeout"
+  | "disabled_by_user_input"
+  | "start_failed";
+
+/** Rust `CaptureHealth` (see `crates/hotwire-core`). */
+export interface CaptureHealth {
+  permission: PermissionStatus;
+  status: CaptureStatus;
+  paused: boolean;
+}
+
+/** Rust `ActionSummary` (see `crates/hotwire-core`). */
+export interface ActionSummary {
+  actionId: string;
+  adapterId: string;
+  status: ActionReceiptStatus;
+}
+
+/**
+ * Rust `DiagnosticsReport` (see `commands.rs` / `crates/hotwire-core`).
+ *
+ * Deliberately restricted to permitted categories; it never carries typed
+ * text, prompts, exact commands, or arbitrary key sequences (spec §21).
+ */
+export interface DiagnosticsReport {
+  appVersion?: string | null;
+  capture: CaptureHealth;
+  lastAction?: ActionSummary | null;
+}
+
 /** Rust `ProfileValidationReport` (see `commands.rs`). */
 export interface ProfileValidationReport {
   valid: boolean;
@@ -123,6 +160,48 @@ export async function quitDesktop(): Promise<void> {
 export async function emitMockActionReceipt(): Promise<ActionReceipt | null> {
   if (!isRunningInTauri()) return null;
   return invoke<ActionReceipt>("mock_action_receipt");
+}
+
+/**
+ * Returns a diagnostics snapshot (spec §6.4).
+ *
+ * In the browser this returns a safe preview so the prototype renders without
+ * a Rust backend; the report never contains typed text, prompts, exact
+ * commands, or arbitrary key sequences.
+ */
+export async function getDiagnostics(): Promise<DiagnosticsReport> {
+  if (!isRunningInTauri()) {
+    return {
+      appVersion: "browser-preview",
+      capture: {
+        permission: "authorized",
+        status: "stopped",
+        paused: false,
+      },
+      lastAction: null,
+    };
+  }
+  return invoke<DiagnosticsReport>("diagnostics");
+}
+
+/**
+ * Pauses capture (fail-open recovery surface). Returns the new paused state.
+ *
+ * Browser no-op returning `false`, so the web preview stays identical.
+ */
+export async function pauseCapture(): Promise<boolean> {
+  if (!isRunningInTauri()) return false;
+  return invoke<boolean>("pause_capture");
+}
+
+/**
+ * Resumes capture after a pause. Returns the new paused state.
+ *
+ * Browser no-op returning `false`.
+ */
+export async function resumeCapture(): Promise<boolean> {
+  if (!isRunningInTauri()) return false;
+  return invoke<boolean>("resume_capture");
 }
 
 /**

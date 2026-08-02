@@ -23,15 +23,15 @@ The workspace is layered so that no higher layer may redefine a lower one.
 
 | Component | Owns | Dependency direction |
 | --- | --- | --- |
-| `hotwire-core` | `PhysicalKeyEvent`, `KeyState`, `ModifierState`, `Trigger`, `ActionStatus`, `ActionReceipt` | — |
-| `hotwire-input` | trigger state machine, `CaptureGate`/`EmergencyBypass`, `InputBackend` seam | → core |
-| `hotwire-input-macos` | Quartz event-tap backend (capture, suppression, injection, fail-open) | → input |
+| `hotwire-core` | `PhysicalKeyEvent`, `KeyState`, `ModifierState`, `Trigger`, `ActionStatus`, `ActionReceipt`, `CaptureHealth`, `DiagnosticsReport`, `TelemetryPolicy` | — |
+| `hotwire-input` | trigger state machine, `CaptureGate`/`EmergencyBypass`, `InputBackend` seam, fail-open health gate | → core |
+| `hotwire-input-macos` | Quartz event-tap backend (capture, suppression, injection, fail-open, `health()` diagnostics) | → input |
 | `hotwire-input-windows` | `WH_KEYBOARD_LL` placeholder (later) | → input |
 | `hotwire-profile` | `Profile`/`Binding` model, `CaptureMode`, YAML/JSON validation + export | → core |
-| `hotwire-runner` | `CommandSpec` review, `CancellationToken`, timeouts | — |
+| `hotwire-runner` | `CommandSpec` argv/cwd/env/timeout, risk classification, review-before-execute, `CommandRunner`, redacted logs | — |
 | `hotwire-adapter-sdk` | `AdapterManifest`, `ActionInvocation`, `ActionResult`, `Adapter` trait | → core |
-| `hotwire-router` | `BindingRouter`, `AdapterRegistry`, `HotwireRuntime`, receipts | → core, input, profile, adapter-sdk |
-| `apps/desktop/src-tauri` | Tauri shell, typed IPC commands | → core, profile, adapter-sdk |
+| `hotwire-router` | `BindingRouter`, `AdapterRegistry`, `HotwireRuntime` (pause/resume/shutdown), receipts | → core, input, profile, adapter-sdk |
+| `apps/desktop/src-tauri` | Tauri shell, typed IPC commands, diagnostics/pause/recovery surfaces, menu bar | → core, profile, adapter-sdk, input-macos |
 | `packages/schema` | Zod boundary types (profile, action, adapter, execution) | — |
 | `packages/profiles` | YAML parse/export, canonical fixtures | → schema |
 | `apps/desktop/src` | React prototype, typed IPC bridge | → schema, profiles |
@@ -133,6 +133,36 @@ readable, shareable documents. Shell/script bindings are reviewed against
 their exact command (`hotwire-runner::CommandSpec::describe`) before first
 execution.
 
+### Safe execution, review, and redacted logs (`hotwire-runner`)
+
+The runner owns the review-before-execute and cancellation boundaries. A
+`CommandSpec` is an argument array with a `CwdStrategy` (fixed, home, current
+project, or ask — spec §13.3), a `SanitizedEnv` that rebuilds the child
+environment from an allowlist plus explicit variables and tracks secret keys,
+a timeout, and a visible-terminal flag (default on for development commands).
+`classify_command_risk` marks destructive programs and arbitrary imported
+executables as confirmation-risk; `ApprovalStore` requires the exact command
+line to be approved before their first run (spec §15.2) and remembers the
+approval for identical commands. `CommandRunner::run` spawns with
+`kill_on_drop`, races the timeout and a `CancellationToken`, and hands
+visible-terminal commands to a real terminal session. `SafetyLog` writes a
+closed-field `LogEntry` set through a `Redactor` so secrets and secret-style
+`KEY=value` tokens never reach a log (spec §15.1/§15.3); the model has no field
+for typed text, prompts, or arbitrary key sequences. See `docs/safety.md`.
+
+### Diagnostics and recovery
+
+`hotwire-core` owns the neutral diagnostics model: `CaptureHealth`
+(permission, tap status, paused), `ActionSummary`, `DiagnosticsReport`, and
+`TelemetryPolicy` (off by default, spec §21). `CaptureHealth::fail_open` is the
+single fail-open decision; `CaptureGate::decide_with_health` never suppresses a
+key when capture is unhealthy (spec §15.5). `HotwireRuntime` adds pause/resume
+(reset the router, cancel in-flight executions, no key left held) and a
+permanent `shutdown`. The shell exposes `diagnostics`, `pause_capture`,
+`resume_capture` over IPC and a menu-bar "Pause capture" item, so recovery is
+available without opening the main window. Diagnostics and logs never contain
+typed text, prompts, secrets, or arbitrary key sequences.
+
 ## IPC surface (`apps/desktop/src-tauri`)
 
 The Tauri shell registers a small typed surface in `commands.rs` and one
@@ -147,6 +177,10 @@ Commands:
 - `mock_action_receipt` → emits a mocked `ActionReceipt` event (native capture
   is INP-001; this exercises the event path with the real `hotwire-core`
   payload shape)
+- `diagnostics` → a `DiagnosticsReport` snapshot (capture health, app version,
+  last action summary) restricted to permitted categories (spec §6.4, §21)
+- `pause_capture` / `resume_capture` → toggle the fail-open capture pause and
+  re-label the menu-bar item, returning the new paused state
 
 Event:
 
@@ -163,10 +197,12 @@ capture lands.
 ## Menu-bar lifecycle (`apps/desktop/src-tauri`)
 
 Hotwire is a menu-bar app (spec §6.1). `tray.rs` owns a tray icon whose menu
-provides "Open Hotwire…" (reveals the configuration window) and "Quit".
-`window.rs` owns the configuration-window lifecycle: the red close button
-hides the window instead of quitting, so the app keeps running in the menu
-bar; `quit` and the Dock-reopen event (`RunEvent::Reopen`) re-show it.
+provides "Open Hotwire…" (reveals the configuration window), a "Pause capture"
+item that toggles the fail-open pause on the shared tap (a recovery surface
+available without opening the window), and "Quit". `window.rs` owns the
+configuration-window lifecycle: the red close button hides the window instead
+of quitting, so the app keeps running in the menu bar; `quit` and the
+Dock-reopen event (`RunEvent::Reopen`) re-show it.
 
 ## Initial vertical slice
 

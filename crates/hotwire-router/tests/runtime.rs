@@ -234,3 +234,81 @@ async fn press_receipt_carries_route_context() {
     assert_eq!(started.profile_id, "p");
     assert_eq!(started.binding_id, "b");
 }
+
+#[tokio::test]
+async fn pause_suppresses_routing_and_ends_in_flight_holds() {
+    let adapter = TestAdapter::new(ActionStatus::Started);
+    let calls = adapter.calls.clone();
+    let mut runtime = HotwireRuntime::new(
+        profile(
+            None,
+            vec![binding("h", "Numpad0", Trigger::Hold, "voice.input", true)],
+        ),
+        RouterConfig::default(),
+    )
+    .expect("runtime should build");
+    runtime
+        .registry_mut()
+        .register(Arc::new(adapter))
+        .expect("adapter should register");
+
+    let mut receipts = runtime.subscribe_receipts();
+    runtime.on_event(&event(0, "Numpad0", KeyState::Down)).await;
+    assert!(receipts.try_recv().is_ok(), "started receipt");
+
+    let cancelled = runtime.pause().await;
+    assert_eq!(cancelled, 1, "pausing must end the in-flight hold");
+    assert!(runtime.is_paused());
+    assert_eq!(calls.lock().expect("lock").cancelled.len(), 1);
+
+    let while_paused = runtime.on_event(&event(1, "Numpad0", KeyState::Down)).await;
+    assert!(
+        while_paused.invocations.is_empty(),
+        "a paused runtime must not fire actions"
+    );
+    assert!(!while_paused.consume_original);
+
+    runtime.resume();
+    assert!(!runtime.is_paused());
+    let after_resume = runtime.on_event(&event(2, "Numpad0", KeyState::Down)).await;
+    assert_eq!(
+        after_resume.invocations.len(),
+        1,
+        "resuming restores routing"
+    );
+}
+
+#[tokio::test]
+async fn shutdown_cancels_active_executions_and_never_routes_again() {
+    let adapter = TestAdapter::new(ActionStatus::Started);
+    let calls = adapter.calls.clone();
+    let mut runtime = HotwireRuntime::new(
+        profile(
+            None,
+            vec![binding("h", "Numpad0", Trigger::Hold, "voice.input", true)],
+        ),
+        RouterConfig::default(),
+    )
+    .expect("runtime should build");
+    runtime
+        .registry_mut()
+        .register(Arc::new(adapter))
+        .expect("adapter should register");
+
+    let mut receipts = runtime.subscribe_receipts();
+    runtime.on_event(&event(0, "Numpad0", KeyState::Down)).await;
+    assert!(receipts.try_recv().is_ok(), "started receipt");
+
+    let cancelled = runtime.shutdown().await;
+    assert_eq!(cancelled, 1, "shutdown must cancel every active execution");
+    assert!(runtime.is_stopped());
+    assert!(runtime.is_paused());
+    assert_eq!(calls.lock().expect("lock").cancelled.len(), 1);
+
+    let after_shutdown = runtime.on_event(&event(1, "Numpad0", KeyState::Down)).await;
+    assert!(
+        after_shutdown.invocations.is_empty(),
+        "a shut-down runtime must never route again"
+    );
+    assert!(!after_shutdown.consume_original);
+}

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use hotwire_core::PhysicalKeyEvent;
+use hotwire_core::{CaptureHealth, PhysicalKeyEvent};
 
 use crate::bypass::EmergencyBypass;
 
@@ -148,6 +148,26 @@ impl CaptureGate {
             bypass_chord,
         }
     }
+
+    /// Like [`CaptureGate::decide`], but never suppresses when capture is not
+    /// healthy.
+    ///
+    /// The fail-open invariant (spec §15.5): when the process lost its input
+    /// permission, the tap is stopped or failed, secure input disabled it, or
+    /// capture is paused, every key must pass through untouched. Consult the
+    /// backend's live [`hotwire_core::CaptureHealth`] and pass it here.
+    #[must_use]
+    pub fn decide_with_health(
+        &mut self,
+        event: &PhysicalKeyEvent,
+        health: &CaptureHealth,
+    ) -> GateDecision {
+        let mut decision = self.decide(event);
+        if health.fail_open() {
+            decision.suppressed = false;
+        }
+        decision
+    }
 }
 
 impl Default for CaptureGate {
@@ -248,5 +268,67 @@ mod tests {
             }
         );
         assert!(gate.decide(&event("Numpad5", false, false)).suppressed);
+    }
+
+    fn unhealthy() -> CaptureHealth {
+        CaptureHealth {
+            permission: hotwire_core::PermissionStatus::Denied,
+            status: hotwire_core::CaptureStatus::Stopped,
+            paused: false,
+        }
+    }
+
+    #[test]
+    fn gate_never_suppresses_when_capture_health_fails_open() {
+        let mut gate = CaptureGate::new();
+        gate.policy_mut().set_captured_keys(["Numpad5".into()]);
+
+        assert!(
+            gate.decide(&event("Numpad5", false, false)).suppressed,
+            "healthy capture suppresses a bound key"
+        );
+        let decision = gate.decide_with_health(&event("Numpad5", false, false), &unhealthy());
+        assert!(
+            !decision.suppressed,
+            "permission loss must fail open and pass the key through"
+        );
+        assert!(!decision.paused);
+        assert!(!decision.bypass_chord);
+    }
+
+    #[test]
+    fn gate_fails_open_for_every_unhealthy_state() {
+        use hotwire_core::{CaptureStatus, PermissionStatus};
+
+        let mut gate = CaptureGate::new();
+        gate.policy_mut().set_captured_keys(["Numpad5".into()]);
+        let press = event("Numpad5", false, false);
+
+        let states = [
+            (PermissionStatus::Denied, CaptureStatus::Running, false),
+            (PermissionStatus::Authorized, CaptureStatus::Stopped, false),
+            (
+                PermissionStatus::Authorized,
+                CaptureStatus::StartFailed,
+                false,
+            ),
+            (
+                PermissionStatus::Authorized,
+                CaptureStatus::DisabledByUserInput,
+                false,
+            ),
+            (PermissionStatus::Authorized, CaptureStatus::Running, true),
+        ];
+        for (permission, status, paused) in states {
+            let health = CaptureHealth {
+                permission,
+                status,
+                paused,
+            };
+            assert!(
+                !gate.decide_with_health(&press, &health).suppressed,
+                "state {permission:?}/{status:?}/paused={paused} must fail open"
+            );
+        }
     }
 }

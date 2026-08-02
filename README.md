@@ -32,6 +32,15 @@ event tap that captures and suppresses selected numpad keys, passes everything
 else through, filters Hotwire's own injected events, and fails open on shutdown
 or permission loss. See `docs/input-proof.md`.
 
+SAFE-001 added the safety foundation (`docs/safety.md`): the runner crate
+(argument-array commands, working-directory strategies, sanitized environments,
+timeouts/cancellation, visible-terminal default for development commands), risk
+classification, review-before-execute for imported confirmation-risk commands,
+redacted local logs, capture-health diagnostics, pause/resume/shutdown
+recovery controls, and a no-telemetry-by-default policy. The shell exposes
+`diagnostics`, `pause_capture`, and `resume_capture` over IPC plus a menu-bar
+"Pause capture" item.
+
 ## Repository layout
 
 ```text
@@ -45,7 +54,7 @@ hotwire/
 │   ├── hotwire-input/      trigger detection + input-backend seam
 │   ├── hotwire-input-macos/   Quartz event-tap proof (INP-001)
 │   ├── hotwire-input-windows/ WH_KEYBOARD_LL seam (later)
-│   ├── hotwire-runner/     command review + timeout/cancellation boundary
+│   ├── hotwire-runner/     safe command execution, review, redacted logs
 │   ├── hotwire-profile/    profile model + YAML/JSON validation + export
 │   ├── hotwire-adapter-sdk/   adapter execution contract
 │   └── hotwire-router/     binding router, adapter registry, runtime, receipts

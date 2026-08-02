@@ -17,7 +17,7 @@ use thiserror::Error;
 
 pub use bypass::{BypassAction, EmergencyBypass, ModifierChord};
 pub use capture::{CaptureGate, CaptureMode, CapturePolicy, GateDecision};
-pub use hotwire_core::{ModifierState, Trigger};
+pub use hotwire_core::{CaptureHealth, CaptureStatus, ModifierState, PermissionStatus, Trigger};
 
 /// Error surfaced by an [`InputBackend`] when it cannot start or is not yet
 /// implemented on the current platform.
@@ -144,6 +144,16 @@ impl TriggerDetector {
     #[must_use]
     pub fn is_armed(&self) -> bool {
         self.phase != DetectorPhase::Idle
+    }
+
+    /// Resets the detector to its idle state, abandoning any in-flight
+    /// interaction.
+    ///
+    /// Recovery surfaces (pausing capture, deactivating a profile) call this
+    /// so a held key that was never released does not keep the detector armed
+    /// after capture resumes.
+    pub fn reset(&mut self) {
+        self.phase = DetectorPhase::Idle;
     }
 
     fn on_down(&mut self, at_ns: u64) -> Vec<TriggerEvent> {

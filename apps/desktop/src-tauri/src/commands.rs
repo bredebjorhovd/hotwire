@@ -8,7 +8,7 @@
 //! event boundary before real capture lands (INP-001). Frontend-side typed
 //! wrappers live in `apps/desktop/src/features/bridge/ipc.ts`.
 
-use hotwire_core::{ActionReceipt, ActionStatus};
+use hotwire_core::{ActionReceipt, ActionStatus, DiagnosticsReport};
 use serde::Serialize;
 
 use hotwire_profile::{parse_yaml, Profile, SCHEMA_VERSION};
@@ -83,13 +83,55 @@ pub fn quit(app: tauri::AppHandle) {
 /// Emits a mocked [`ActionReceipt`] event (spec §10.1 typed events).
 ///
 /// Stands in for a real `hotwire-core` run until native capture lands, so the
-/// UI can be developed against the same event shape. Also returns the receipt
-/// so the caller can inspect it without listening.
+/// UI can be developed against the same event shape. Also records the receipt
+/// as the diagnostics "last action" and returns it so the caller can inspect
+/// it without listening.
 #[tauri::command]
-pub fn mock_action_receipt(app: tauri::AppHandle) -> ActionReceipt {
+pub fn mock_action_receipt(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::state::ShellState>,
+) -> ActionReceipt {
     let receipt = mock_receipt();
+    if let Ok(mut last) = state.last_receipt.lock() {
+        *last = Some(receipt.clone());
+    }
     let _ = crate::events::emit_action_receipt(&app, &receipt);
     receipt
+}
+
+/// Returns a diagnostics snapshot (spec §6.4).
+///
+/// The report is deliberately restricted to permitted categories: capture
+/// health, app version, and a summary of the last action. It never contains
+/// typed text, prompts, exact commands, or arbitrary key sequences (spec §21).
+#[tauri::command]
+pub fn diagnostics(state: tauri::State<'_, crate::state::ShellState>) -> DiagnosticsReport {
+    let last_action = state
+        .last_receipt
+        .lock()
+        .ok()
+        .and_then(|guard| crate::state::summarize_last_receipt(&guard));
+    DiagnosticsReport {
+        app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        capture: state.tap.health(),
+        last_action,
+    }
+}
+
+/// Pauses capture (fail-open recovery surface). Returns the new paused state.
+#[tauri::command]
+pub fn pause_capture(state: tauri::State<'_, crate::state::ShellState>) -> bool {
+    let paused = crate::state::pause_capture(&state.tap);
+    crate::state::sync_pause_label(&state.pause_item, paused);
+    paused
+}
+
+/// Resumes capture after a pause. Returns the new paused state.
+#[tauri::command]
+pub fn resume_capture(state: tauri::State<'_, crate::state::ShellState>) -> bool {
+    let paused = crate::state::resume_capture(&state.tap);
+    crate::state::sync_pause_label(&state.pause_item, paused);
+    paused
 }
 
 /// The fixture receipt used by `mock_action_receipt`.

@@ -48,6 +48,8 @@ pub struct HotwireRuntime {
     registry: AdapterRegistry,
     receipts: broadcast::Sender<ActionReceipt>,
     active: HashMap<String, ActiveExecution>,
+    paused: bool,
+    stopped: bool,
 }
 
 impl HotwireRuntime {
@@ -64,6 +66,8 @@ impl HotwireRuntime {
             registry: AdapterRegistry::new(),
             receipts,
             active: HashMap::new(),
+            paused: false,
+            stopped: false,
         })
     }
 
@@ -95,7 +99,13 @@ impl HotwireRuntime {
     }
 
     /// Feeds one key event through routing and dispatches anything that fired.
+    ///
+    /// A paused or stopped runtime ignores events entirely (fail-open): no
+    /// action fires and nothing is consumed.
     pub async fn on_event(&mut self, event: &PhysicalKeyEvent) -> RouteOutcome {
+        if self.paused || self.stopped {
+            return RouteOutcome::default();
+        }
         let outcome = self.router.on_event(event);
 
         for receipt in &outcome.receipts {
@@ -155,6 +165,47 @@ impl HotwireRuntime {
             }
         }
         cancelled
+    }
+
+    /// Returns whether the runtime is paused.
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    /// Returns whether the runtime has been shut down.
+    #[must_use]
+    pub fn is_stopped(&self) -> bool {
+        self.stopped
+    }
+
+    /// Pauses the runtime: no further events route, every in-flight execution
+    /// is cancelled so no key stays logically held down, and the router's
+    /// interaction state is reset so the next press after resume starts fresh.
+    ///
+    /// Returns how many executions were cancelled.
+    #[must_use]
+    pub async fn pause(&mut self) -> usize {
+        self.paused = true;
+        self.router.reset();
+        self.cancel_active().await
+    }
+
+    /// Resumes the runtime after a pause.
+    pub fn resume(&mut self) {
+        self.paused = false;
+    }
+
+    /// Shuts the runtime down: pauses it, cancels every in-flight execution,
+    /// and permanently stops it from accepting events.
+    ///
+    /// This is the clean-shutdown surface (spec §15.5): after it returns, no
+    /// action can fire and no key is left held. Returns how many executions
+    /// were cancelled.
+    #[must_use]
+    pub async fn shutdown(&mut self) -> usize {
+        self.stopped = true;
+        self.pause().await
     }
 
     async fn dispatch_start(&mut self, invocation: ActionInvocation) {
