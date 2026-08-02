@@ -1,0 +1,25 @@
+{
+  "name": "@hotwire/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "dev": "vite",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hotwire/schema": "workspace:*",
+    "@vitejs/plugin-react": "latest",
+    "vite": "latest",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

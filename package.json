@@ -1,0 +1,15 @@
+{
+  "name": "hotwire",
+  "private": true,
+  "packageManager": "pnpm@10.14.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm --recursive build",
+    "dev": "pnpm --filter @hotwire/desktop dev",
+    "test": "pnpm --recursive test",
+    "typecheck": "pnpm --recursive typecheck"
+  }
+}
+
