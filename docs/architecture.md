@@ -27,9 +27,10 @@ The workspace is layered so that no higher layer may redefine a lower one.
 | `hotwire-input` | trigger state machine, `InputBackend` seam | → core |
 | `hotwire-input-macos` | Quartz event-tap placeholder (INP-001) | → input |
 | `hotwire-input-windows` | `WH_KEYBOARD_LL` placeholder (later) | → input |
-| `hotwire-profile` | `Profile`/`Binding` model, YAML/JSON validation | → core |
+| `hotwire-profile` | `Profile`/`Binding` model, `CaptureMode`, YAML/JSON validation + export | → core |
 | `hotwire-runner` | `CommandSpec` review, `CancellationToken`, timeouts | — |
 | `hotwire-adapter-sdk` | `AdapterManifest`, `ActionInvocation`, `ActionResult`, `Adapter` trait | → core |
+| `hotwire-router` | `BindingRouter`, `AdapterRegistry`, `HotwireRuntime`, receipts | → core, input, profile, adapter-sdk |
 | `apps/desktop/src-tauri` | Tauri shell, typed IPC commands | → core, profile, adapter-sdk |
 | `packages/schema` | Zod boundary types (profile, action, adapter, execution) | — |
 | `packages/profiles` | YAML parse/export, canonical fixtures | → schema |
@@ -56,6 +57,35 @@ repeat events before binding lookup to prevent recursion.
 platforms feed it and collect results. `InputBackend` is the seam the macOS
 and Windows crates implement.
 
+### Binding routing and execution (`hotwire-router`)
+
+`BindingRouter` is the pure state machine that turns events into decisions. It
+holds one `TriggerDetector` per enabled binding, groups detectors by physical
+code, and for every event decides:
+
+- **Firing** — which binding won the interaction, preferring a layer binding
+  (`layer: true`) over a normal one on the same key while the layer key is
+  held. Disabled bindings are dropped at construction and never fire.
+- **Layer gating** — the profile's single `layerKey` (spec §9.2) flips on
+  key-down and off on key-up; layer bindings only fire while it is held.
+- **Capture modes** (spec §9.3) — `capture` consumes per
+  `consumeOriginal`, `modified_capture` only captures while the layer key is
+  held, and `passthrough` observes without ever consuming.
+- **Consumption** — `consumeOriginal` applies to the down that fired and its
+  matching up (and to repeat downs while a hold is active), so a held key
+  never re-fires and never leaves a key logically held down.
+- **Hold lifecycle** — `hold` fires once on down and releases exactly once on
+  up (`RouteOutcome::releases`), so push-to-talk starts and stops cleanly.
+
+The router is pure: it never touches the OS and never awaits an adapter.
+`AdapterRegistry` holds registered adapters by manifest id and is the only path
+to an adapter (execution, release, cancellation). `HotwireRuntime` composes
+them — it executes fired actions, ends and cancels holds, tracks in-flight
+executions by id, and broadcasts every `ActionReceipt`
+(`started`/`succeeded`/`failed`/`cancelled`) to live-board, log, and
+diagnostics subscribers. Events must be fed to the runtime from an async task,
+never from a native input callback.
+
 ### Semantic actions and adapter execution (`hotwire-adapter-sdk` / `packages/schema`)
 
 Semantic actions are stable intent names (`app.open_or_focus`, `voice.input`)
@@ -72,9 +102,12 @@ Profiles are YAML documents validated against schema version 1 before
 activation. `hotwire-profile::parse_yaml` (Rust) and
 `@hotwire/profiles::parseProfileYaml` (TypeScript) validate the same document
 shape and normalize shorthand (generated binding ids, defaulted
-`consumeOriginal`, canonical physical-code casing). Shell/script bindings are
-reviewed against their exact command (`hotwire-runner::CommandSpec::describe`)
-before first execution.
+`consumeOriginal`, canonical physical-code casing). Imported profiles declare
+`schemaVersion: 1`; any other version is rejected before activation.
+`hotwire-profile::export_yaml`/`export_json` render validated profiles back to
+readable, shareable documents. Shell/script bindings are reviewed against
+their exact command (`hotwire-runner::CommandSpec::describe`) before first
+execution.
 
 ## IPC surface (`apps/desktop/src-tauri`)
 
