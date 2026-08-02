@@ -6,11 +6,13 @@ use hotwire_adapter_sdk::{
     ValidationResult,
 };
 use hotwire_core::ActionStatus;
+use hotwire_runner::{CancellationToken, CommandRunner, CommandSpec, CwdStrategy, RunStatus};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
 pub struct ToolAdapter {
     manifest: AdapterManifest,
+    runner: CommandRunner,
 }
 
 impl ToolAdapter {
@@ -25,6 +27,25 @@ impl ToolAdapter {
                 capabilities: capabilities.iter().map(|v| (*v).into()).collect(),
                 config_schema: json!({"type":"object"}),
             },
+            runner: CommandRunner::new(),
+        }
+    }
+
+    async fn run_safe(&self, argv: Vec<String>, imported: bool) -> Result<String, String> {
+        let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+        let spec = CommandSpec::new(argv)
+            .with_cwd(CwdStrategy::Fixed(cwd))
+            .with_open_terminal(false)
+            .with_imported(imported);
+        let output = self
+            .runner
+            .run(&spec, &CancellationToken::new(), None)
+            .await;
+        match output.status {
+            RunStatus::Succeeded { .. } => Ok(output.stdout),
+            RunStatus::ApprovalRequired(review) => Err(format!("approval required: {review}")),
+            RunStatus::Failed { .. } | RunStatus::StartError(_) => Err(output.stderr),
+            status => Err(format!("command ended with {status:?}")),
         }
     }
 
@@ -75,12 +96,55 @@ impl Adapter for ToolAdapter {
     }
     async fn execute(&self, invocation: &ActionInvocation) -> ActionResult {
         let result = match (self.manifest.id.as_str(), invocation.action_id.as_str()) {
-            ("terminal", "terminal.open") => tokio::process::Command::new("open").args(["-a", "Terminal"]).output().await.map_err(|e| e.to_string()),
-            ("claude-code", "claude.launch") => tokio::process::Command::new("open").args(["-a", "Claude"]).output().await.map_err(|e| e.to_string()),
-            ("codex", "codex.launch") => tokio::process::Command::new("open").args(["-a", "Codex"]).output().await.map_err(|e| e.to_string()),
-            ("git", "git.diff") => tokio::process::Command::new("git").args(["diff", "--stat"]).output().await.map_err(|e| e.to_string()),
-            ("terminal", "test.run") => Err("test.run requires an approved project command; configure it in the runner review surface".into()),
-            ("git", "git.commit" | "git.pr") => Err("mutating Git actions require explicit runner approval before execution".into()),
+            ("terminal", "terminal.open") => tokio::process::Command::new("open")
+                .args(["-a", "Terminal"])
+                .output()
+                .await
+                .map_err(|e| e.to_string()),
+            ("claude-code", "claude.launch") => tokio::process::Command::new("open")
+                .args(["-a", "Claude"])
+                .output()
+                .await
+                .map_err(|e| e.to_string()),
+            ("codex", "codex.launch") => tokio::process::Command::new("open")
+                .args(["-a", "Codex"])
+                .output()
+                .await
+                .map_err(|e| e.to_string()),
+            ("git", "git.diff") => self
+                .run_safe(vec!["git".into(), "diff".into(), "--stat".into()], false)
+                .await
+                .map(|stdout| std::process::Output {
+                    status: std::process::ExitStatus::default(),
+                    stdout: stdout.into_bytes(),
+                    stderr: vec![],
+                }),
+            ("terminal", "test.run") => self
+                .run_safe(vec!["pnpm".into(), "test".into()], false)
+                .await
+                .map(|stdout| std::process::Output {
+                    status: std::process::ExitStatus::default(),
+                    stdout: stdout.into_bytes(),
+                    stderr: vec![],
+                }),
+            ("git", "git.commit" | "git.pr") => self
+                .run_safe(
+                    vec![
+                        "git".into(),
+                        invocation
+                            .action_id
+                            .strip_prefix("git.")
+                            .unwrap_or("status")
+                            .into(),
+                    ],
+                    true,
+                )
+                .await
+                .map(|stdout| std::process::Output {
+                    status: std::process::ExitStatus::default(),
+                    stdout: stdout.into_bytes(),
+                    stderr: vec![],
+                }),
             ("app", "app.open_or_focus") => {
                 let app = invocation
                     .config
@@ -104,7 +168,10 @@ impl Adapter for ToolAdapter {
                     .ok_or_else(|| "shortcut config must include `shortcut`".to_string());
                 shortcut.and_then(send_shortcut)
             }
-            _ => Err(format!("unsupported {} action `{}`", self.manifest.id, invocation.action_id)),
+            _ => Err(format!(
+                "unsupported {} action `{}`",
+                self.manifest.id, invocation.action_id
+            )),
         };
         match result {
             Ok(output) if output.status.success() => ActionResult {
