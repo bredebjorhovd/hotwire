@@ -39,7 +39,14 @@ export function App() {
   const finishSetup = (choices: WizardChoices) => {
     if (choices.profileId) {
       setActiveProfileId(choices.profileId);
-      void activateProfileYaml(loadFixtureYaml(choices.profileId));
+      let yaml = loadFixtureYaml(choices.profileId);
+      if (choices.profileId === "comet-numpad" && choices.cometChatId.trim()) {
+        yaml = yaml.replace(
+          /ipcPort: 27654/g,
+          `ipcPort: 27654\n      chatId: ${JSON.stringify(choices.cometChatId.trim())}`,
+        );
+      }
+      void activateProfileYaml(yaml);
     }
     setMode("board");
   };

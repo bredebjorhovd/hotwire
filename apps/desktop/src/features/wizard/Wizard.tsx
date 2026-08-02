@@ -16,6 +16,7 @@ export interface WizardChoices {
   permissionGranted: boolean;
   captureComplete: boolean;
   profileId: string | null;
+  cometChatId: string;
 }
 
 export const WIZARD_STEP_COUNT = 8;
@@ -57,6 +58,7 @@ export function Wizard({ onFinish }: WizardProps) {
     permissionGranted: false,
     captureComplete: false,
     profileId: null,
+    cometChatId: "",
   });
 
   const canContinue = useMemo(() => {
@@ -133,7 +135,12 @@ export function Wizard({ onFinish }: WizardProps) {
           onSelect={(id) => setChoices((c) => ({ ...c, profileId: id }))}
         />
       )}
-      {step === 5 && <ConnectScreen />}
+      {step === 5 && (
+        <ConnectScreen
+          chatId={choices.cometChatId}
+          onChatIdChange={(cometChatId) => setChoices((c) => ({ ...c, cometChatId }))}
+        />
+      )}
       {step === 6 && <TestScreen profile={activeProfile} />}
       {step === 7 && <DoneScreen profile={activeProfile} />}
     </WizardShell>
