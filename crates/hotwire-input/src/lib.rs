@@ -2,15 +2,21 @@
 //!
 //! Native input backends normalize raw OS events into
 //! [`hotwire_core::PhysicalKeyEvent`] values and hand them over on a channel.
-//! This crate owns the *trigger detection* logic and the *backend seam* that
-//! the macOS and Windows implementations will fill in later. It never touches
-//! the OS and never executes actions.
+//! This crate owns the *trigger detection* logic, the *capture policy* and
+//! *emergency bypass* that decide which keys Hotwire consumes, and the
+//! *backend seam* that the macOS and Windows implementations fill in. It never
+//! touches the OS and never executes actions.
+
+mod bypass;
+mod capture;
 
 use std::sync::mpsc::Sender;
 
 use hotwire_core::{KeyState, PhysicalKeyEvent};
 use thiserror::Error;
 
+pub use bypass::{BypassAction, EmergencyBypass, ModifierChord};
+pub use capture::{CaptureGate, CaptureMode, CapturePolicy, GateDecision};
 pub use hotwire_core::{ModifierState, Trigger};
 
 /// Error surfaced by an [`InputBackend`] when it cannot start or is not yet
@@ -41,6 +47,13 @@ pub trait InputBackend: Send + Sync {
     /// placeholder, or [`BackendError::Start`] when OS capture is unavailable
     /// (for example, missing Accessibility/Input Monitoring permission).
     fn start(&self, sink: Sender<PhysicalKeyEvent>) -> Result<(), BackendError>;
+
+    /// Best-effort stop of the backend.
+    ///
+    /// The default does nothing. Backends that spawn resources must release
+    /// them here and must not leave a logical key held down (see the
+    /// fail-open invariant).
+    fn stop(&self) {}
 }
 
 /// One step of a detected interaction, ordered per physical key.

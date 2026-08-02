@@ -24,8 +24,8 @@ The workspace is layered so that no higher layer may redefine a lower one.
 | Component | Owns | Dependency direction |
 | --- | --- | --- |
 | `hotwire-core` | `PhysicalKeyEvent`, `KeyState`, `ModifierState`, `Trigger`, `ActionStatus`, `ActionReceipt` | — |
-| `hotwire-input` | trigger state machine, `InputBackend` seam | → core |
-| `hotwire-input-macos` | Quartz event-tap placeholder (INP-001) | → input |
+| `hotwire-input` | trigger state machine, `CaptureGate`/`EmergencyBypass`, `InputBackend` seam | → core |
+| `hotwire-input-macos` | Quartz event-tap backend (capture, suppression, injection, fail-open) | → input |
 | `hotwire-input-windows` | `WH_KEYBOARD_LL` placeholder (later) | → input |
 | `hotwire-profile` | `Profile`/`Binding` model, YAML/JSON validation | → core |
 | `hotwire-runner` | `CommandSpec` review, `CancellationToken`, timeouts | — |
@@ -53,8 +53,23 @@ repeat events before binding lookup to prevent recursion.
 
 `TriggerDetector` turns a `PhysicalKeyEvent` stream into `TriggerEvent`s
 (down/up/cancelled) for `press`, `hold`, and `double_press`. It is pure —
-platforms feed it and collect results. `InputBackend` is the seam the macOS
-and Windows crates implement.
+platforms feed it and collect results. `CaptureGate` combines `CapturePolicy`
+(mode + bound keys) with `EmergencyBypass` (⌃⌥⌘Esc) into the single
+suppression decision the native callback makes; both are unit-tested without
+any OS calls. `InputBackend` is the seam the macOS and Windows crates
+implement, with `stop()` releasing resources fail-open.
+
+### Quartz event tap (`hotwire-input-macos`)
+
+The macOS proof (INP-001) runs a `CGEventTap` on a dedicated thread. The
+callback normalizes each key event to `PhysicalKeyEvent`, passes Hotwire's own
+injected events (tagged with `INJECTED_MARKER` in the event user-data field)
+straight through, enqueues everything on a channel, and returns `Drop` only for
+bound keys while capture is active. The tap re-enables itself after
+`TapDisabledByTimeout`, goes fail-open on `TapDisabledByUserInput` and on any
+permission loss, and `stop()` releases every logically held key so shutdown can
+never leave one down. See `docs/input-proof.md` for setup and manual
+verification.
 
 ### Semantic actions and adapter execution (`hotwire-adapter-sdk` / `packages/schema`)
 

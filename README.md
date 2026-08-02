@@ -12,8 +12,11 @@ routes:
 
 This repository is the build foundation (BOOT-001): a Tauri 2 + React
 desktop shell, a Rust workspace, shared schema and profile packages, CI, and
-the typed boundaries between input, actions, adapters, and profiles. No
-low-level capture is implemented here yet.
+the typed boundaries between input, actions, adapters, and profiles. Native
+capture on macOS is proven by INP-001 (`hotwire-input-macos`): a Quartz event
+tap that captures and suppresses selected numpad keys, passes everything else
+through, filters Hotwire's own injected events, and fails open on shutdown or
+permission loss. See `docs/input-proof.md`.
 
 ## Repository layout
 
@@ -26,7 +29,7 @@ hotwire/
 ├── crates/
 │   ├── hotwire-core/       normalized events, triggers, action receipts
 │   ├── hotwire-input/      trigger detection + input-backend seam
-│   ├── hotwire-input-macos/   Quartz event-tap seam (INP-001)
+│   ├── hotwire-input-macos/   Quartz event-tap proof (INP-001)
 │   ├── hotwire-input-windows/ WH_KEYBOARD_LL seam (later)
 │   ├── hotwire-runner/     command review + timeout/cancellation boundary
 │   ├── hotwire-profile/    profile model + YAML/JSON validation
@@ -81,14 +84,15 @@ bar at the bottom of the prototype proves the Rust↔TypeScript IPC boundary
 | Boundary | Rust | TypeScript |
 | --- | --- | --- |
 | Normalized physical-key events | `hotwire-core::PhysicalKeyEvent` | — (native only) |
-| Triggers / state machine | `hotwire-input` | `triggerSchema` |
+| Triggers / capture gate | `hotwire-input` | `triggerSchema` |
 | Semantic actions | — | `actionDefinitionSchema` |
 | Adapter execution | `hotwire-adapter-sdk` | `actionInvocationSchema` / `actionResultSchema` |
 | Profile validation | `hotwire-profile` | `@hotwire/schema` + `@hotwire/profiles` |
 
 Profiles are versioned, human-readable YAML. Imported profiles must validate
 before activation, and the Rust and TypeScript validators agree on the same
-document shape (see `docs/architecture.md`).
+document shape (see `docs/architecture.md`). The native input proof and its
+manual verification are described in `docs/input-proof.md`.
 
 ## License
 
