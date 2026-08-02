@@ -22,6 +22,10 @@ connected tools, live board test, done) with a tactile numpad signature object,
 dark/light tokens, animated signal-trace route receipts, keyboard navigation
 and reduced-motion support. The prototype is fixture-driven and renders fully
 in the browser (`pnpm dev`); the Rust shell adds the typed IPC boundary.
+APP-001 completed the shell: the configuration-window lifecycle (close hides,
+tray/Dock reopen shows), the menu-bar popover foundation (Open / Quit), the
+typed `action-receipt` event boundary with a mocked receipt, and the
+`desktop:dev`/`desktop:build` commands.
 
 Native capture on macOS is proven by INP-001 (`hotwire-input-macos`): a Quartz
 event tap that captures and suppresses selected numpad keys, passes everything
@@ -82,13 +86,20 @@ cargo test --workspace
 ./scripts/check.sh
 
 # Desktop shell (Tauri): dev app and frontend-only preview
-pnpm tauri dev          # from apps/desktop or the repo root
+pnpm desktop:dev       # tauri dev — Tauri window + live menu bar
 pnpm dev                # plain-vite preview without the Rust shell
+
+# Package the macOS .app (runs the frontend build first)
+pnpm desktop:build
 ```
 
-`pnpm tauri dev` runs the React frontend inside the Tauri webview; the status
+`pnpm desktop:dev` runs the React frontend inside the Tauri webview; the status
 bar at the bottom of the prototype proves the Rust↔TypeScript IPC boundary
-(and degrades gracefully in the plain `pnpm dev` preview).
+(and degrades gracefully in the plain `pnpm dev` preview). Hotwire is a
+menu-bar app: a tray icon hosts "Open Hotwire…" and "Quit", closing the window
+hides it (the app keeps running), and the header's "TEST RECEIPT" button emits
+a mocked `action-receipt` event so the "last action" readout is exercised with
+the real `hotwire-core` payload shape before native capture lands.
 
 ## Typed boundaries
 
@@ -99,7 +110,8 @@ bar at the bottom of the prototype proves the Rust↔TypeScript IPC boundary
 | Routing / layers / capture modes | `hotwire-router::BindingRouter` | `captureModeSchema` + `layer` |
 | Adapter execution | `hotwire-adapter-sdk` | `actionInvocationSchema` / `actionResultSchema` |
 | Adapter registry / runtime | `hotwire-router::AdapterRegistry` / `HotwireRuntime` | — (native only) |
-| Execution receipts | `hotwire-core::ActionReceipt` | — (native only) |
+| Execution receipts | `hotwire-core::ActionReceipt` | `action-receipt` event (bridge) + `mock_action_receipt` |
+| Shell lifecycle / menu bar | `apps/desktop/src-tauri` (`window.rs`, `tray.rs`) | `show_main_window`, `quit` (bridge) |
 | Profile validation + export | `hotwire-profile` | `@hotwire/schema` + `@hotwire/profiles` |
 
 Profiles are versioned, human-readable YAML. Imported profiles must validate

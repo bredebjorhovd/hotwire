@@ -1,13 +1,14 @@
 /**
  * Typed bridge between the React frontend and the Rust desktop shell.
  *
- * Every function here mirrors a `#[tauri::command]` in
- * `apps/desktop/src-tauri/src/commands.rs`. Outside the Tauri runtime (plain
- * `vite dev` in a browser) the bridge degrades gracefully so the interaction
- * prototype keeps working without the shell.
+ * Every function here mirrors a `#[tauri::command]` or event in
+ * `apps/desktop/src-tauri/src/` (`commands.rs`, `events.rs`). Outside the
+ * Tauri runtime (plain `vite dev` in a browser) the bridge degrades
+ * gracefully so the interaction prototype keeps working without the shell.
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { parseProfileYaml } from "@hotwire/profiles";
 
@@ -25,6 +26,28 @@ export interface ProfileValidationReport {
   profile?: unknown;
   error?: string;
 }
+
+/** Rust `ActionStatus` (see `crates/hotwire-core`), serialized snake_case. */
+export type ActionReceiptStatus = "started" | "succeeded" | "failed" | "cancelled";
+
+/** Rust `ActionReceipt` (see `crates/hotwire-core`), serialized camelCase. */
+export interface ActionReceipt {
+  executionId: string;
+  profileId: string;
+  bindingId: string;
+  physicalCode: string;
+  actionId: string;
+  adapterId: string;
+  status: ActionReceiptStatus;
+  message?: string | null;
+}
+
+/**
+ * Event name for `ActionReceipt` payloads.
+ *
+ * Mirrors `ACTION_RECEIPT_EVENT` in `apps/desktop/src-tauri/src/events.rs`.
+ */
+export const ACTION_RECEIPT_EVENT = "action-receipt";
 
 /** Whether the page is running inside the Tauri webview. */
 export function isRunningInTauri(): boolean {
@@ -66,4 +89,67 @@ export async function validateProfileYaml(
       : { valid: false, error: result.error };
   }
   return invoke<ProfileValidationReport>("validate_profile", { yaml });
+}
+
+/**
+ * Reveals and focuses the configuration window (menu-bar "Open Hotwire…").
+ *
+ * Browser no-op, so the web preview stays identical.
+ */
+export async function showMainWindow(): Promise<void> {
+  if (isRunningInTauri()) {
+    await invoke("show_main_window");
+  }
+}
+
+/**
+ * Quits the desktop shell.
+ *
+ * Browser no-op.
+ */
+export async function quitDesktop(): Promise<void> {
+  if (isRunningInTauri()) {
+    await invoke("quit");
+  }
+}
+
+/**
+ * Asks the shell to emit a mocked `ActionReceipt` event.
+ *
+ * Returns the receipt for callers that want it without listening. Browser
+ * no-op returning `null`, so the web preview never fakes an event it could
+ * not have delivered.
+ */
+export async function emitMockActionReceipt(): Promise<ActionReceipt | null> {
+  if (!isRunningInTauri()) return null;
+  return invoke<ActionReceipt>("mock_action_receipt");
+}
+
+/**
+ * Subscribes to `ActionReceipt` events emitted by the Rust shell.
+ *
+ * Returns an unsubscriber. Outside Tauri it is a no-op that is safe to call
+ * from React effects.
+ */
+export function subscribeActionReceipts(
+  callback: (receipt: ActionReceipt) => void,
+): UnlistenFn {
+  if (!isRunningInTauri()) {
+    return () => undefined;
+  }
+  let cancelled = false;
+  let unlisten: UnlistenFn | undefined;
+  void listen<ActionReceipt>(ACTION_RECEIPT_EVENT, (event) =>
+    callback(event.payload),
+  ).then((fn) => {
+    if (cancelled) {
+      fn();
+    } else {
+      unlisten = fn;
+    }
+  });
+  return () => {
+    cancelled = true;
+    unlisten?.();
+  };
 }

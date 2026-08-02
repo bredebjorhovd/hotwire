@@ -135,13 +135,38 @@ execution.
 
 ## IPC surface (`apps/desktop/src-tauri`)
 
-The Tauri shell registers a small typed surface in `commands.rs`:
+The Tauri shell registers a small typed surface in `commands.rs` and one
+event in `events.rs`:
+
+Commands:
 
 - `app_status` → shell version, profile schema version, input backend state
 - `validate_profile(yaml)` → validated profile or a readable error
+- `show_main_window` → reveals and focuses the configuration window
+- `quit` → exits the shell cleanly
+- `mock_action_receipt` → emits a mocked `ActionReceipt` event (native capture
+  is INP-001; this exercises the event path with the real `hotwire-core`
+  payload shape)
 
-The frontend bridge (`apps/desktop/src/features/bridge/ipc.ts`) wraps these
-with fallbacks so the plain-vite prototype still runs without the shell.
+Event:
+
+- `action-receipt` (payload `hotwire-core::ActionReceipt`, camelCase) →
+  broadcast to every webview so the live board, logs, and the menu-bar
+  popover's "last action" readout can react.
+
+The frontend bridge (`apps/desktop/src/features/bridge/ipc.ts`) wraps the
+commands and `subscribeActionReceipts` wraps the event, each with fallbacks
+so the plain-vite prototype still runs without the shell. `mock_action_receipt`
+and its event are the typed boundary the UI is developed against until native
+capture lands.
+
+## Menu-bar lifecycle (`apps/desktop/src-tauri`)
+
+Hotwire is a menu-bar app (spec §6.1). `tray.rs` owns a tray icon whose menu
+provides "Open Hotwire…" (reveals the configuration window) and "Quit".
+`window.rs` owns the configuration-window lifecycle: the red close button
+hides the window instead of quitting, so the app keeps running in the menu
+bar; `quit` and the Dock-reopen event (`RunEvent::Reopen`) re-show it.
 
 ## Initial vertical slice
 

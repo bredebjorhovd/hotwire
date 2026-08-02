@@ -25,16 +25,21 @@ pass compiles the whole stack including the `tauri` crate.
 
 ```sh
 # Interactive development: vite + tauri webview
-pnpm tauri dev
+pnpm desktop:dev       # (alias for `pnpm tauri dev`)
 
 # Frontend-only preview (no Rust shell; IPC degrades gracefully)
 pnpm dev
+
+# Package the macOS app (.app bundle) — runs the frontend build first
+pnpm desktop:build     # (alias for `pnpm tauri build`)
 ```
 
-The shell's `tauri.conf.json` points `frontendDist` at `../dist`, so run
-`pnpm build` once before bundling. Dev uses `devUrl` `http://localhost:1420`.
-`cargo build`/`cargo test` work without the frontend build; `pnpm tauri build`
-needs it.
+`pnpm desktop:dev` runs the React frontend inside the Tauri webview with the
+menu bar live (Open Hotwire… / Quit) and the `action-receipt` event boundary
+available via the "TEST RECEIPT" header button. The shell's `tauri.conf.json`
+points `frontendDist` at `../dist`, so run `pnpm build` once before bundling.
+Dev uses `devUrl` `http://localhost:1420`. `cargo build`/`cargo test` work
+without the frontend build; `pnpm desktop:build` needs it.
 
 ### Regenerating icons
 
