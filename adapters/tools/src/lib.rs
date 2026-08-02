@@ -18,6 +18,11 @@ pub struct ToolAdapter {
 impl ToolAdapter {
     #[must_use]
     pub fn new(id: &str, name: &str, capabilities: &[&str]) -> Self {
+        Self::with_runner(id, name, capabilities, CommandRunner::new())
+    }
+
+    #[must_use]
+    pub fn with_runner(id: &str, name: &str, capabilities: &[&str], runner: CommandRunner) -> Self {
         Self {
             manifest: AdapterManifest {
                 id: id.into(),
@@ -27,7 +32,7 @@ impl ToolAdapter {
                 capabilities: capabilities.iter().map(|v| (*v).into()).collect(),
                 config_schema: json!({"type":"object"}),
             },
-            runner: CommandRunner::new(),
+            runner,
         }
     }
 

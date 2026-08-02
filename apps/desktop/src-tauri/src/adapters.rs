@@ -31,6 +31,7 @@ use hotwire_adapter_sdk::{
 use hotwire_adapter_tools::ToolAdapter;
 use hotwire_core::{ActionReceipt, ActionStatus, Trigger};
 use hotwire_router::AdapterRegistry;
+use hotwire_runner::{CommandRunner, PendingReview};
 use serde_json::Value;
 
 /// The lifecycle flags that gate new adapter starts during recovery.
@@ -56,6 +57,7 @@ pub struct AdapterState {
     ops: tokio::sync::Mutex<()>,
     /// The paused/stopped flags consulted by [`AdapterState::run`].
     lifecycle: Mutex<AdapterLifecycle>,
+    reviews: CommandRunner,
 }
 
 impl AdapterState {
@@ -63,6 +65,7 @@ impl AdapterState {
     #[must_use]
     pub fn new() -> Self {
         let mut registry = AdapterRegistry::new();
+        let reviews = CommandRunner::new();
         registry
             .register(Arc::new(HerdrAdapter::new(herdr_platform())))
             .expect("herdr adapter registers exactly once");
@@ -78,25 +81,51 @@ impl AdapterState {
             ("shortcut", "Shortcut", &["send"][..]),
         ] {
             registry
-                .register(Arc::new(ToolAdapter::new(id, name, capabilities)))
+                .register(Arc::new(ToolAdapter::with_runner(
+                    id,
+                    name,
+                    capabilities,
+                    reviews.clone(),
+                )))
                 .expect("tool adapter registers exactly once");
         }
         registry
             .register(Arc::new(PapegoyeAdapter::new(papegoye_platform())))
             .expect("papegoye adapter registers exactly once");
-        Self::with_registry(registry)
+        Self::with_registry_and_reviews(registry, reviews)
     }
 
     /// Builds a state around a pre-populated registry (used by tests and the
     /// recovery lifecycle).
     pub(crate) fn with_registry(registry: AdapterRegistry) -> Self {
+        Self::with_registry_and_reviews(registry, CommandRunner::new())
+    }
+
+    fn with_registry_and_reviews(registry: AdapterRegistry, reviews: CommandRunner) -> Self {
         Self {
             registry,
             active: Mutex::new(HashMap::new()),
             next_execution: AtomicU64::new(0),
             ops: tokio::sync::Mutex::new(()),
             lifecycle: Mutex::new(AdapterLifecycle::default()),
+            reviews,
         }
+    }
+
+    #[must_use]
+    pub fn pending_reviews(&self) -> Vec<PendingReview> {
+        self.reviews.pending_reviews()
+    }
+
+    pub fn approve_review(&self, id: &str) -> Result<(), String> {
+        self.reviews
+            .approve(id)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn deny_review(&self, id: &str) -> Result<(), String> {
+        self.reviews.deny(id).map_err(|error| error.to_string())
     }
 
     /// How many adapter executions are currently tracked as in flight.

@@ -37,6 +37,44 @@ pub struct ProfileValidationReport {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingReviewReport {
+    pub id: String,
+    pub command: String,
+}
+
+#[tauri::command]
+pub fn pending_reviews(
+    state: tauri::State<'_, crate::state::ShellState>,
+) -> Vec<PendingReviewReport> {
+    state
+        .adapters
+        .pending_reviews()
+        .into_iter()
+        .map(|review| PendingReviewReport {
+            id: review.id.as_str().to_string(),
+            command: review.plan.describe(),
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub fn approve_review(
+    id: String,
+    state: tauri::State<'_, crate::state::ShellState>,
+) -> Result<(), String> {
+    state.adapters.approve_review(&id)
+}
+
+#[tauri::command]
+pub fn deny_review(
+    id: String,
+    state: tauri::State<'_, crate::state::ShellState>,
+) -> Result<(), String> {
+    state.adapters.deny_review(&id)
+}
+
 /// Returns the desktop shell's runtime status.
 #[tauri::command]
 pub fn app_status() -> AppStatus {

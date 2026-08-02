@@ -22,6 +22,7 @@ hotwire-core = { path = "../../../crates/hotwire-core" }
 hotwire-input-macos = { path = "../../../crates/hotwire-input-macos" }
 hotwire-profile = { path = "../../../crates/hotwire-profile" }
 hotwire-router = { path = "../../../crates/hotwire-router" }
+hotwire-runner = { path = "../../../crates/hotwire-runner" }
 serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
