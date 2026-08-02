@@ -32,7 +32,7 @@ impl ToolAdapter {
         match self.manifest.id.as_str() {
             "claude-code" => Some("claude"),
             "codex" => Some("codex"),
-            "terminal" => Some("open"),
+            "terminal" | "app" | "shortcut" => Some("open"),
             "git" => Some("git"),
             _ => None,
         }
@@ -81,6 +81,25 @@ impl Adapter for ToolAdapter {
             ("git", "git.diff") => tokio::process::Command::new("git").args(["diff", "--stat"]).output().await.map_err(|e| e.to_string()),
             ("terminal", "test.run") => Err("test.run requires an approved project command; configure it in the runner review surface".into()),
             ("git", "git.commit" | "git.pr") => Err("mutating Git actions require explicit runner approval before execution".into()),
+            ("app", "app.open_or_focus") => {
+                let app = invocation
+                    .config
+                    .get("appName")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Terminal");
+                let bundle = invocation.config.get("bundleId").and_then(Value::as_str);
+                let mut command = tokio::process::Command::new("open");
+                if let Some(bundle) = bundle {
+                    command.args(["-b", bundle]);
+                } else {
+                    command.args(["-a", app]);
+                }
+                command.output().await.map_err(|e| e.to_string())
+            }
+            ("shortcut", "profile.switch" | "shortcut.send") => Err(
+                "shortcut delivery requires an explicit macOS key-injection configuration"
+                    .into(),
+            ),
             _ => Err(format!("unsupported {} action `{}`", self.manifest.id, invocation.action_id)),
         };
         match result {

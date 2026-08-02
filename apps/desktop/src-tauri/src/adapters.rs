@@ -74,6 +74,8 @@ impl AdapterState {
             ("codex", "Codex", &["launch", "prompt"][..]),
             ("terminal", "Terminal", &["open", "run"][..]),
             ("git", "Git", &["diff", "commit", "pr"][..]),
+            ("app", "Application", &["open_or_focus"][..]),
+            ("shortcut", "Shortcut", &["send"][..]),
         ] {
             registry
                 .register(Arc::new(ToolAdapter::new(id, name, capabilities)))
