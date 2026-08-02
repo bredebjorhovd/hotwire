@@ -1,0 +1,23 @@
+[package]
+name = "hotwire-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Tauri 2 desktop shell for Hotwire"
+
+[lib]
+name = "hotwire_desktop_lib"
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+hotwire-adapter-sdk = { path = "../../../crates/hotwire-adapter-sdk" }
+hotwire-core = { path = "../../../crates/hotwire-core" }
+hotwire-profile = { path = "../../../crates/hotwire-profile" }
+serde.workspace = true
+tauri.workspace = true
+
+[lints]
+workspace = true

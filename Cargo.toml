@@ -1,5 +1,14 @@
 [workspace]
-members = ["crates/hotwire-core"]
+members = [
+  "crates/hotwire-core",
+  "crates/hotwire-input",
+  "crates/hotwire-input-macos",
+  "crates/hotwire-input-windows",
+  "crates/hotwire-runner",
+  "crates/hotwire-profile",
+  "crates/hotwire-adapter-sdk",
+  "apps/desktop/src-tauri",
+]
 resolver = "2"
 
 [workspace.package]
@@ -8,10 +17,19 @@ license = "Apache-2.0"
 rust-version = "1.81"
 version = "0.1.0"
 
+[workspace.dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tauri = "2"
+tauri-build = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt"] }
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"
-

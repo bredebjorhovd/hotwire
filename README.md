@@ -4,35 +4,92 @@ Turn unused keys into a control surface for your tools.
 
 Hotwire is a local-first desktop utility that maps physical keys to semantic
 actions for Herdr, Claude Code, Codex, Papegøye, applications, shortcuts, and
-developer commands.
-
-The first implementation slice targets macOS and proves two routes:
+developer commands. The first implementation slice targets macOS and proves two
+routes:
 
 - `Numpad5 → OPEN_HERDR → launch or focus Herdr`
 - `Numpad0 hold → VOICE → hold Papegøye push-to-talk`
 
+This repository is the build foundation (BOOT-001): a Tauri 2 + React
+desktop shell, a Rust workspace, shared schema and profile packages, CI, and
+the typed boundaries between input, actions, adapters, and profiles. No
+low-level capture is implemented here yet.
+
 ## Repository layout
 
-- `apps/desktop` — React interaction prototype and future Tauri shell
-- `crates/hotwire-core` — normalized input and action-routing domain model
-- `packages/schema` — shared, versioned TypeScript profile schema
-- `docs/architecture.md` — implementation boundaries and safety invariants
+```text
+hotwire/
+├── apps/
+│   └── desktop/            React interaction prototype + Tauri 2 shell
+│       ├── src/            app / components / features / routes / styles
+│       └── src-tauri/      Rust shell, IPC commands, capabilities
+├── crates/
+│   ├── hotwire-core/       normalized events, triggers, action receipts
+│   ├── hotwire-input/      trigger detection + input-backend seam
+│   ├── hotwire-input-macos/   Quartz event-tap seam (INP-001)
+│   ├── hotwire-input-windows/ WH_KEYBOARD_LL seam (later)
+│   ├── hotwire-runner/     command review + timeout/cancellation boundary
+│   ├── hotwire-profile/    profile model + YAML/JSON validation
+│   └── hotwire-adapter-sdk/   adapter execution contract
+├── packages/
+│   ├── schema/             versioned Zod boundary types
+│   └── profiles/           YAML parsing/export + canonical fixtures
+├── adapters/               first-party adapter ownership (ADP-001)
+├── profiles/               profile storage location
+├── scripts/                check.sh, icon generator
+├── docs/                   architecture + development guides
+└── .github/workflows/      CI
+```
+
+## Prerequisites
+
+- Node.js 22+
+- pnpm 10+
+- Stable Rust (1.81+)
+- macOS for the Tauri desktop shell
 
 ## Development
 
-Prerequisites: Node.js 22+, pnpm 10+, and stable Rust.
-
 ```sh
+# Install dependencies (frontend + workspace links)
 pnpm install
+
+# Type-check, test, and build the pnpm workspace
+pnpm typecheck
 pnpm test
 pnpm build
+
+# Rust workspace: format, lint, and test
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+
+# Everything above in one command
+./scripts/check.sh
+
+# Desktop shell (Tauri): dev app and frontend-only preview
+pnpm tauri dev          # from apps/desktop or the repo root
+pnpm dev                # plain-vite preview without the Rust shell
 ```
 
-Hotwire is pre-alpha. The current code is the build foundation for the product
-specification and does not yet intercept system keyboard events.
+`pnpm tauri dev` runs the React frontend inside the Tauri webview; the status
+bar at the bottom of the prototype proves the Rust↔TypeScript IPC boundary
+(and degrades gracefully in the plain `pnpm dev` preview).
+
+## Typed boundaries
+
+| Boundary | Rust | TypeScript |
+| --- | --- | --- |
+| Normalized physical-key events | `hotwire-core::PhysicalKeyEvent` | — (native only) |
+| Triggers / state machine | `hotwire-input` | `triggerSchema` |
+| Semantic actions | — | `actionDefinitionSchema` |
+| Adapter execution | `hotwire-adapter-sdk` | `actionInvocationSchema` / `actionResultSchema` |
+| Profile validation | `hotwire-profile` | `@hotwire/schema` + `@hotwire/profiles` |
+
+Profiles are versioned, human-readable YAML. Imported profiles must validate
+before activation, and the Rust and TypeScript validators agree on the same
+document shape (see `docs/architecture.md`).
 
 ## License
 
 Apache-2.0. See `LICENSE`.
-

@@ -1,0 +1,13 @@
+schemaVersion: 1
+id: herdr-numpad
+name: Herdr Numpad
+controlSurface: numpad
+enabled: true
+bindings:
+  - id: open-herdr
+    physicalCode: Numpad5
+    trigger: press
+    actionId: app.open_or_focus
+    adapterId: herdr
+    consumeOriginal: true
+    config: {}
