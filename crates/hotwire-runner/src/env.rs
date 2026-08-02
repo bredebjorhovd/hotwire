@@ -7,6 +7,7 @@
 //! surface (spec §15.3).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 use crate::command::CommandError;
 use crate::redact::Redactor;
@@ -18,7 +19,11 @@ pub type SecretSet = BTreeSet<String>;
 const REDACTED_VALUE: &str = "[REDACTED]";
 
 /// A sanitized environment for one command execution.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+///
+/// `Eq`/`Ord` are full structural equality over the resolved plan, which is
+/// part of what approval is bound to. `Debug` is redacted: the value of any
+/// marked secret key is masked, so derived output never leaks a secret value.
+#[derive(Clone, Default, Eq, PartialEq, PartialOrd, Ord)]
 pub struct SanitizedEnv {
     /// Variables explicitly set for the command; these always win.
     explicit: BTreeMap<String, String>,
@@ -28,6 +33,17 @@ pub struct SanitizedEnv {
     /// Names of variables whose values must be redacted from any output that
     /// leaves the runner (logs, diagnostics, receipts).
     secrets: SecretSet,
+}
+
+impl fmt::Debug for SanitizedEnv {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SanitizedEnv")
+            .field("explicit", &self.build_redacted())
+            .field("inherit", &self.inherit)
+            .field("secrets", &self.secrets)
+            .finish()
+    }
 }
 
 impl SanitizedEnv {
@@ -121,14 +137,27 @@ impl SanitizedEnv {
             .collect()
     }
 
-    /// Returns a [`Redactor`] seeded with this environment's secrets, ready to
-    /// mask the same values inside free-form messages.
+    /// Returns a [`Redactor`] seeded from the *resolved* sanitized environment,
+    /// ready to mask the same values inside free-form messages.
+    ///
+    /// This covers secrets from both sources: explicit variables and values
+    /// inherited from the host for marked keys.
     #[must_use]
     pub fn redactor(&self) -> Redactor {
+        self.redactor_for(&self.build())
+    }
+
+    /// Returns a [`Redactor`] seeded from a resolved environment map.
+    ///
+    /// `resolved` is the environment the child actually receives (usually
+    /// [`SanitizedEnv::build`]); for every marked secret key its value there —
+    /// explicit or inherited — is registered as a literal to mask.
+    #[must_use]
+    pub fn redactor_for(&self, resolved: &BTreeMap<String, String>) -> Redactor {
         let mut redactor = Redactor::new();
         for key in &self.secrets {
             redactor = redactor.with_key(key.clone());
-            if let Some(value) = self.explicit.get(key) {
+            if let Some(value) = resolved.get(key) {
                 redactor = redactor.with_literal(value.clone());
             }
         }
@@ -213,6 +242,37 @@ mod tests {
             .redact("export TOKEN=hunter2")
             .contains("[REDACTED]"));
         assert!(!redactor.redact("export TOKEN=hunter2").contains("hunter2"));
+    }
+
+    #[test]
+    fn redactor_covers_secrets_inherited_from_the_resolved_environment() {
+        let mut env = SanitizedEnv::new().inherit("HOST_SECRET");
+        env.mark_secret("HOST_SECRET");
+        // The resolved environment is what the child actually receives; a
+        // marked secret inherited from the host is only visible there.
+        let mut resolved = env.build();
+        resolved.insert("HOST_SECRET".into(), "host-inherited-value".into());
+
+        let redactor = env.redactor_for(&resolved);
+        let masked = redactor.redact("the child echoed host-inherited-value");
+        assert!(
+            !masked.contains("host-inherited-value"),
+            "an inherited secret value must be masked"
+        );
+        assert!(masked.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn debug_output_masks_secret_values_but_keeps_others() {
+        let mut env = SanitizedEnv::new().with_var("API_TOKEN", "ghp-super-secret");
+        env.mark_secret("API_TOKEN");
+
+        let debug = format!("{env:?}");
+        assert!(!debug.contains("ghp-super-secret"));
+        assert!(debug.contains("[REDACTED]"));
+
+        let plain = SanitizedEnv::new().with_var("HOTWIRE_MODE", "safe");
+        assert!(format!("{plain:?}").contains("safe"));
     }
 
     #[test]

@@ -29,17 +29,33 @@ a clean `StartError`, never a guess.
 `SanitizedEnv` rebuilds the child environment from scratch: the host
 environment is cleared, an explicit allowlist of variables is carried over, and
 explicit variables win. Secret keys are tracked separately, so
-`build_redacted()` and the env's `redactor()` can mask their values everywhere
-they might leak.
+`build_redacted()` and the env's `redactor()` (seeded from the **resolved**
+environment, including inherited values) can mask their values everywhere they
+might leak.
+
+### Visible terminals (spec §13.3)
+
+The visible-terminal path builds a POSIX script that `cd`s into the resolved
+working directory, then runs `exec env -i` with only the resolved sanitized
+environment and the argument array. Every word is single-quoted with correct
+POSIX argv quoting, so spaces, quotes, `$VAR`, `$()`, and newlines inside an
+argument are literal and cannot expand or inject; the AppleScript string handed
+to `osascript` is encoded with correct AppleScript escaping, and the runner
+waits for osascript's exit so a quoting or launch failure surfaces as an error
+instead of a false "spawned" report.
 
 ### Timeouts and cancellation (spec §20)
 
-`CommandRunner::run` spawns the process with `kill_on_drop`, captures stdout and
-stderr up to a cap, and races completion against the spec timeout and a shared
-`CancellationToken`. Either one kills the child. The visible-terminal path hands
-the command to a real terminal session (`osascript` on macOS) and returns
-`SpawnedInTerminal`; the default for user-authored development commands is a
-visible terminal (spec §13.3). Background commands are the tracked path.
+`CommandRunner::run` spawns the process with `kill_on_drop` into its **own
+process group**, captures stdout and stderr up to a cap, and races completion
+against the spec timeout and a shared `CancellationToken`. On timeout or
+cancellation the *whole group* is killed and reaped — the command and any
+descendants it spawned — not just the immediate child. The visible-terminal
+path hands the command to a real terminal session (`osascript` on macOS) and
+returns `SpawnedInTerminal`; the default for user-authored development commands
+is a visible terminal (spec §13.3). Visible-terminal runs are explicitly
+**untracked**: the runner does not wait on them and claims no timeout or
+cancellation coverage.
 
 ## Risk classification (spec §15.2)
 
@@ -53,25 +69,39 @@ visible terminal (spec §13.3). Background commands are the tracked path.
 
 ## Review-before-execute (spec §14, §15.2)
 
-`ApprovalStore` implements imported-command approval. The first execution of an
-imported confirmation-level action produces a `PendingReview` carrying the
-exact command line (`CommandSpec::describe`); it runs only after `approve`,
-and the same command line stays approved for later presses. `deny` drops the
-review without approving anything.
+`ApprovalStore` implements imported-command approval, and `CommandRunner`
+**enforces it on the only public execution path**: a confirmation-risk imported
+command returns `RunStatus::ApprovalRequired` without starting anything until
+its exact structured spec is approved. The first execution of an imported
+confirmation-level action produces a `PendingReview` carrying the exact command
+line (`CommandSpec::describe`); `approve` lets it run and `deny` drops it
+without approving. An approval is bound to the **complete immutable spec** —
+argv, working-directory strategy, sanitized environment, timeout, terminal
+mode, and provenance — so mutating any security-relevant field forces a new
+review; it cannot be reused by a different execution plan.
 
-## Redacted local logs (spec §15.1, §15.3)
+## Redacted, structured local logs (spec §15.1, §15.3)
 
-`LogEntry` has a closed field set: timestamp, level, category, outcome, action
-id, adapter id, and the single matched physical code — plus a free-text
-`message`. `SafetyLog` pushes every message through a `Redactor` before the
-sink sees it, so secret values and `KEY=value` tokens (like
-`ANTHROPIC_API_KEY=…`) are masked even when the exact value was not registered.
-`InMemorySink` and `FileSink` (JSON lines) are provided.
+`LogEntry` has a closed field set — timestamp, level, category, action id,
+adapter id, the single matched physical code, and a structured `EventDetail`
+(success/failure with an exit code, approval lifecycle, capture pause/resume,
+shutdown, tap health). There is **no free-text field at all**, so typed text,
+prompts, file paths, and arbitrary key sequences are *unrepresentable* in the
+persistent log, and secrets have no field to leak through. `SafetyLog` writes
+only these allowlisted fields to `InMemorySink` or `FileSink` (JSON lines).
+Raw-event capture is a **separate, explicit opt-in surface** that auto-disables
+after a short window and is never persisted (`RawEventDiagnostics`).
+
+Secret hygiene is layered: `SanitizedEnv` tracks marked keys, redacts them from
+the built environment, and seeds a `Redactor` from the **resolved**
+environment (explicit *and* inherited values), so a secret the child echoes
+bare is masked. Derived `Debug` output for `SanitizedEnv` and `CommandSpec`
+masks secret values and runs argv through the env's redactor.
 
 The structural guarantee is that **diagnostics never contain typed text,
 prompts, secrets, or arbitrary key sequences**: the log model has no field for
-them, and the message field is redacted. Logs are local by construction — there
-is no network code here.
+them, and Debug/redaction output is masked. Logs are local by construction —
+there is no network code here.
 
 ## Diagnostics and recovery
 

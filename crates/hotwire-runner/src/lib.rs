@@ -22,6 +22,7 @@
 mod command;
 mod env;
 mod log;
+mod raw;
 mod redact;
 mod review;
 mod risk;
@@ -32,7 +33,11 @@ use std::sync::Arc;
 
 pub use command::{CommandError, CommandSpec, CwdStrategy, ResolvedCwd};
 pub use env::{SanitizedEnv, SecretSet};
-pub use log::{FileSink, InMemorySink, LogCategory, LogEntry, LogLevel, LogSink, SafetyLog};
+pub use log::{
+    EventDetail, FileSink, InMemorySink, LogCategory, LogEntry, LogLevel, LogSink, SafetyLog,
+    TapDisableReason,
+};
+pub use raw::{RawEventDiagnostics, RawEventSample};
 pub use redact::{Redactor, REDACTED};
 pub use review::{ApprovalDecision, ApprovalError, ApprovalStore, PendingReview};
 pub use risk::{classify_command_risk, RiskLevel};

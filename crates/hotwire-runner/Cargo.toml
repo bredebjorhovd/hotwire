@@ -8,6 +8,7 @@ description = "Safe command execution: review, sanitized env, timeouts, cancella
 
 [dependencies]
 home = "0.5"
+nix = { version = "0.30", features = ["process", "signal"] }
 serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "process", "rt", "io-util", "sync", "time"] }

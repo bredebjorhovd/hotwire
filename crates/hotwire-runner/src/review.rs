@@ -3,8 +3,12 @@
 //! The first execution of an imported confirmation-level action must display
 //! the exact command and require approval (spec §15.2). [`ApprovalStore`]
 //! turns a confirmation-risk command into a pending [`PendingReview`] that
-//! must be approved before it may run; once approved, the same command line
-//! stays approved so later presses are not re-prompted.
+//! must be approved before it may run. An approval is bound to the *complete
+//! structured spec* — argv, working-directory strategy, sanitized environment,
+//! timeout, terminal mode, and provenance — so mutating any security-relevant
+//! field forces a new review; it cannot be reused by a different execution
+//! plan. The displayed command stays human-readable via
+//! [`CommandSpec::describe`].
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -18,7 +22,8 @@ use crate::risk::RiskLevel;
 pub struct PendingReview {
     /// Stable identifier a caller uses to approve or deny this review.
     pub id: String,
-    /// The exact command under review.
+    /// The exact command under review (the displayed argv is
+    /// [`CommandSpec::describe`]).
     pub spec: CommandSpec,
 }
 
@@ -27,7 +32,7 @@ pub struct PendingReview {
 pub enum ApprovalDecision {
     /// The command does not need approval (low risk or user-authored).
     NotRequired,
-    /// The exact command was approved earlier and may run.
+    /// This exact structured spec was approved earlier and may run.
     AlreadyApproved,
     /// The command must be approved before it may run.
     Pending(PendingReview),
@@ -42,11 +47,14 @@ pub enum ApprovalError {
 }
 
 /// Tracks pending and approved confirmation-risk commands.
+///
+/// Approved commands are stored by full structural equality, so approval is
+/// bound to the complete immutable spec — not to a rendered string.
 #[derive(Debug, Default)]
 pub struct ApprovalStore {
     next_id: u64,
     pending: HashMap<String, PendingReview>,
-    approved: BTreeSet<String>,
+    approved: BTreeSet<CommandSpec>,
 }
 
 impl ApprovalStore {
@@ -60,15 +68,18 @@ impl ApprovalStore {
     ///
     /// Confirmation-risk commands that are not already approved become
     /// [`ApprovalDecision::Pending`] with the exact command line attached;
-    /// everything else runs without review.
+    /// everything else runs without review. Presenting an already-pending
+    /// command returns the same review instead of piling up duplicates.
     #[must_use]
     pub fn request(&mut self, spec: &CommandSpec) -> ApprovalDecision {
         if spec.risk() != RiskLevel::Confirmation {
             return ApprovalDecision::NotRequired;
         }
-        let fingerprint = spec.describe();
-        if self.approved.contains(&fingerprint) {
+        if self.approved.contains(spec) {
             return ApprovalDecision::AlreadyApproved;
+        }
+        if let Some(existing) = self.pending.values().find(|review| review.spec == *spec) {
+            return ApprovalDecision::Pending(existing.clone());
         }
         self.next_id += 1;
         let id = format!("review-{}", self.next_id);
@@ -98,7 +109,7 @@ impl ApprovalStore {
             .pending
             .remove(id)
             .ok_or_else(|| ApprovalError::UnknownReview(id.to_string()))?;
-        self.approved.insert(review.spec.describe());
+        self.approved.insert(review.spec.clone());
         Ok(review.spec)
     }
 
@@ -114,10 +125,10 @@ impl ApprovalStore {
             .ok_or_else(|| ApprovalError::UnknownReview(id.to_string()))
     }
 
-    /// Returns whether this exact command line was already approved.
+    /// Returns whether this exact structured spec was already approved.
     #[must_use]
     pub fn is_approved(&self, spec: &CommandSpec) -> bool {
-        self.approved.contains(&spec.describe())
+        self.approved.contains(spec)
     }
 }
 
@@ -153,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn approve_returns_the_command_and_records_the_fingerprint() {
+    fn approve_returns_the_command_and_records_the_exact_spec() {
         let mut store = ApprovalStore::new();
 
         let spec = command("rm", &["-rf", "/tmp/x"]).with_imported(true);
@@ -197,5 +208,76 @@ mod tests {
             store.deny("review-999"),
             Err(ApprovalError::UnknownReview(_))
         ));
+    }
+
+    #[test]
+    fn approval_is_bound_to_the_full_structured_spec() {
+        let mut store = ApprovalStore::new();
+        let base = command("rm", &["-rf", "/tmp/x"])
+            .with_imported(true)
+            .with_open_terminal(false);
+        let ApprovalDecision::Pending(review) = store.request(&base) else {
+            panic!("expected a pending review");
+        };
+        store.approve(&review.id).expect("approval succeeds");
+
+        // The identical spec is approved; any mutation is a different plan and
+        // must be reviewed again.
+        assert!(store.is_approved(&base));
+        assert_eq!(store.request(&base), ApprovalDecision::AlreadyApproved);
+
+        let mutations = [
+            command("rm", &["-rf", "/tmp/y"]).with_imported(true),
+            base.clone()
+                .with_cwd(crate::CwdStrategy::Fixed("/tmp".into())),
+            base.clone()
+                .with_env(crate::SanitizedEnv::new().with_var("EXTRA", "1")),
+            base.clone().with_timeout(std::time::Duration::from_secs(1)),
+            base.clone().with_open_terminal(true),
+        ];
+        for mutated in mutations {
+            assert!(
+                !store.is_approved(&mutated),
+                "a mutated spec must not reuse an approval"
+            );
+            assert!(
+                matches!(store.request(&mutated), ApprovalDecision::Pending(_)),
+                "a mutated spec must be reviewed again"
+            );
+        }
+    }
+
+    #[test]
+    fn approval_tracks_provenance_of_imported_scripts() {
+        let mut store = ApprovalStore::new();
+        let imported_script = command("./deploy.sh", &[])
+            .with_imported(true)
+            .with_open_terminal(false);
+        let ApprovalDecision::Pending(review) = store.request(&imported_script) else {
+            panic!("an arbitrary imported script must be confirmation-risk");
+        };
+        store.approve(&review.id).expect("approval succeeds");
+        assert!(store.is_approved(&imported_script));
+
+        // The same script authored by the user is low risk: it needs no review
+        // and does not reuse the imported approval.
+        let trusted = imported_script.clone().with_imported(false);
+        assert!(!store.is_approved(&trusted));
+        assert_eq!(store.request(&trusted), ApprovalDecision::NotRequired);
+    }
+
+    #[test]
+    fn presenting_a_pending_command_returns_the_same_review() {
+        let mut store = ApprovalStore::new();
+        let spec = command("rm", &["-rf", "/tmp/x"]).with_imported(true);
+
+        let ApprovalDecision::Pending(first) = store.request(&spec) else {
+            panic!("expected a pending review");
+        };
+        let ApprovalDecision::Pending(second) = store.request(&spec) else {
+            panic!("expected the same pending review");
+        };
+        assert_eq!(first.id, second.id);
+        assert_eq!(store.pending_reviews().len(), 1);
     }
 }

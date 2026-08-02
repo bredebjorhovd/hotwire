@@ -7,6 +7,13 @@
 //! toggle capture on the shared tap and keep the menu-bar item's label in
 //! sync. The tap itself owns the gate state, so the helpers are testable
 //! without a window.
+//!
+//! Recovery ownership, by design: when the execution runtime lands (the
+//! `hotwire-router` `HotwireRuntime` with its `pause`/`shutdown` cancelling
+//! in-flight adapter holds), the shell's pause/quit path must drive *both*
+//! surfaces — stop capture on the tap and cancel active executions on the
+//! runtime — so no key stays held and no action keeps running. This struct is
+//! the single place that ownership will live.
 
 use std::sync::Mutex;
 

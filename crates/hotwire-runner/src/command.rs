@@ -2,6 +2,7 @@
 //! inspectable [`CommandSpec`] that a review screen shows verbatim before an
 //! imported confirmation-risk command may run.
 
+use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -29,7 +30,7 @@ pub enum CommandError {
 }
 
 /// Where a command runs, decided from the profile (spec §13.3).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum CwdStrategy {
     /// Always run in this directory.
     Fixed(PathBuf),
@@ -87,7 +88,12 @@ impl CwdStrategy {
 /// quoting accidents and command injection cannot hide inside the command
 /// line. For user-authored development commands the default is to run in a
 /// visible terminal so the user watches exactly what executes.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// `Eq`/`Ord` are full structural equality over every security-relevant field,
+/// which is what approval is bound to. `Debug` is redacted: the environment
+/// masks secret values and argv is passed through the env's redactor, so a
+/// secret value used as an argument does not appear in derived output.
+#[derive(Clone, Eq, PartialEq, PartialOrd, Ord)]
 pub struct CommandSpec {
     /// The program and its arguments. `argv[0]` is the executable.
     pub argv: Vec<String>,
@@ -104,6 +110,28 @@ pub struct CommandSpec {
     /// that are not on the approved list are confirmation-risk and require
     /// review (spec §15.2).
     pub imported: bool,
+}
+
+impl fmt::Debug for CommandSpec {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let redactor = self.env.redactor();
+        formatter
+            .debug_struct("CommandSpec")
+            .field(
+                "argv",
+                &self
+                    .argv
+                    .iter()
+                    .map(|arg| redactor.redact(arg))
+                    .collect::<Vec<_>>(),
+            )
+            .field("cwd", &self.cwd)
+            .field("env", &self.env)
+            .field("timeout", &self.timeout)
+            .field("open_terminal", &self.open_terminal)
+            .field("imported", &self.imported)
+            .finish()
+    }
 }
 
 impl CommandSpec {
@@ -289,5 +317,19 @@ mod tests {
             spec.resolve_cwd(None).expect("ask defers"),
             ResolvedCwd::AskUser
         );
+    }
+
+    #[test]
+    fn debug_output_redacts_secret_values_in_env_and_argv() {
+        let mut env = crate::env::SanitizedEnv::new().with_var("API_TOKEN", "ghp-super-secret");
+        env.mark_secret("API_TOKEN");
+        let spec = CommandSpec::new(vec!["echo".into(), "ghp-super-secret".into()]).with_env(env);
+
+        let debug = format!("{spec:?}");
+        assert!(
+            !debug.contains("ghp-super-secret"),
+            "derived Debug output must not leak a secret value"
+        );
+        assert!(debug.contains("[REDACTED]"));
     }
 }

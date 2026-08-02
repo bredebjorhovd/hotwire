@@ -141,14 +141,19 @@ project, or ask — spec §13.3), a `SanitizedEnv` that rebuilds the child
 environment from an allowlist plus explicit variables and tracks secret keys,
 a timeout, and a visible-terminal flag (default on for development commands).
 `classify_command_risk` marks destructive programs and arbitrary imported
-executables as confirmation-risk; `ApprovalStore` requires the exact command
-line to be approved before their first run (spec §15.2) and remembers the
-approval for identical commands. `CommandRunner::run` spawns with
-`kill_on_drop`, races the timeout and a `CancellationToken`, and hands
-visible-terminal commands to a real terminal session. `SafetyLog` writes a
-closed-field `LogEntry` set through a `Redactor` so secrets and secret-style
-`KEY=value` tokens never reach a log (spec §15.1/§15.3); the model has no field
-for typed text, prompts, or arbitrary key sequences. See `docs/safety.md`.
+executables as confirmation-risk. `CommandRunner` is the *only* public
+execution path and **enforces** review-before-execute: `ApprovalStore` requires
+the exact structured spec (not just a rendered string) to be approved before an
+imported confirmation-risk command's first run (spec §15.2), and refuses with
+`RunStatus::ApprovalRequired` otherwise. Background commands run in their own
+process group, so a timeout or cancellation kills and reaps the whole tree; the
+visible-terminal path (correct POSIX argv quoting, AppleScript encoding, and
+`env -i` with only the sanitized environment) is explicitly untracked.
+`SafetyLog` writes a closed-field `LogEntry` with a structured `EventDetail` —
+there is no free-text field, so typed text, prompts, paths, and key sequences
+are unrepresentable (spec §15.1/§15.3); raw-event diagnostics are a separate
+opt-in, auto-expiring, never-persisted surface. Derived `Debug` output masks
+secret values. See `docs/safety.md`.
 
 ### Diagnostics and recovery
 
