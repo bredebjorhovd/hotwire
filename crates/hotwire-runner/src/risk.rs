@@ -27,6 +27,10 @@ pub enum RiskLevel {
 }
 
 /// Programs that can destroy data or the machine; always confirmation-risk.
+///
+/// `cp` and `mv` are included because they can overwrite an existing
+/// destination even without `-f`, and no flag combination proves otherwise
+/// (`-n` with a later `-f`/`--force` is platform-dependent).
 pub const DESTRUCTIVE_PROGRAMS: &[&str] = &[
     "rm",
     "rmdir",
@@ -46,6 +50,8 @@ pub const DESTRUCTIVE_PROGRAMS: &[&str] = &[
     "killall",
     "chmod",
     "chown",
+    "cp",
+    "mv",
 ];
 
 /// Shell interpreters whose command-string form (`-c`) is fail-closed
@@ -55,8 +61,7 @@ const SHELL_INTERPRETERS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish"
 /// Programs an imported profile may start without confirmation (spec §15.2's
 /// "start approved CLI" category).
 pub const APPROVED_CLIS: &[&str] = &[
-    "open", "git", "ls", "cat", "pwd", "echo", "true", "false", "mkdir", "cp", "mv", "herdr",
-    "claude", "codex",
+    "open", "git", "ls", "cat", "pwd", "echo", "true", "false", "mkdir", "herdr", "claude", "codex",
 ];
 
 /// `git` subcommands safe to run without confirmation. Everything else is
@@ -106,8 +111,7 @@ pub fn classify_argv(argv: &[String], imported: bool) -> RiskLevel {
     }
 
     // Destructive argument forms on otherwise-approved CLIs are
-    // confirmation-risk (`git` outside the safe-subcommand list, `cp`/`mv`
-    // without a proven no-overwrite flag).
+    // confirmation-risk (`git` outside the safe-subcommand list).
     if destructive_cli_form(base, command_args) {
         return RiskLevel::Confirmation;
     }
@@ -125,9 +129,6 @@ fn destructive_cli_form(base: &str, args: &[String]) -> bool {
     match base {
         // Fail closed: only the safe-subcommand list is Low.
         "git" => !safe_git_subcommand(args),
-        // `cp`/`mv` can overwrite an existing destination even without `-f`;
-        // they are only Low when a proven no-overwrite flag is present.
-        "cp" | "mv" => !has_no_overwrite_flag(args),
         _ => false,
     }
 }
@@ -141,20 +142,6 @@ fn safe_git_subcommand(args: &[String]) -> bool {
         .find(|arg| !arg.starts_with('-'))
         .map(String::as_str)
         .is_some_and(|subcommand| SAFE_GIT_SUBCOMMANDS.contains(&subcommand))
-}
-
-/// Whether `cp`/`mv` carry a proven no-overwrite flag (`-n`/`--no-clobber`).
-///
-/// `-i`/`--interactive` is *not* sufficient: an interactive overwrite prompt
-/// can still overwrite, so only hard no-clobber counts as a safe form.
-fn has_no_overwrite_flag(args: &[String]) -> bool {
-    args.iter().any(|arg| {
-        arg == "--no-clobber"
-            || (arg.starts_with('-')
-                && !arg.starts_with("--")
-                && arg.len() > 1
-                && arg.contains('n'))
-    })
 }
 
 #[cfg(test)]
@@ -304,35 +291,31 @@ mod tests {
     }
 
     #[test]
-    fn cp_and_mv_require_a_proven_no_overwrite_form() {
-        // Without `-n`/`--no-clobber`, cp/mv can overwrite an existing
-        // destination, so they are confirmation-risk.
-        assert_eq!(
-            classify_command_risk(&command("cp", &["source", "dest"], true)),
-            RiskLevel::Confirmation
-        );
-        assert_eq!(
-            classify_command_risk(&command("mv", &["source", "dest"], true)),
-            RiskLevel::Confirmation
-        );
-        assert_eq!(
-            classify_command_risk(&command("cp", &["-rf", "/a", "/b"], true)),
-            RiskLevel::Confirmation
-        );
-        assert_eq!(
-            classify_command_risk(&command("cp", &["-r", "/a", "/b"], false)),
-            RiskLevel::Confirmation,
-            "recursive copy can still overwrite an existing destination"
-        );
-        // A proven no-overwrite flag is Low.
-        assert_eq!(
-            classify_command_risk(&command("cp", &["-rn", "/a", "/b"], true)),
-            RiskLevel::Low
-        );
-        assert_eq!(
-            classify_command_risk(&command("mv", &["--no-clobber", "/a", "/b"], false)),
-            RiskLevel::Low
-        );
+    fn every_cp_and_mv_invocation_is_confirmation_risk() {
+        // `cp`/`mv` can overwrite an existing destination even without `-f`,
+        // and no flag combination proves otherwise (`-n` with a later
+        // `-f`/`--force` is platform-dependent), so every invocation — plain,
+        // no-clobber, and conflicting — is confirmation-risk for any
+        // provenance.
+        let cases: &[(&str, &[&str])] = &[
+            ("cp", &["source", "dest"]),
+            ("mv", &["source", "dest"]),
+            ("cp", &["-n", "source", "dest"]),
+            ("mv", &["--no-clobber", "source", "dest"]),
+            ("cp", &["-n", "-f", "source", "dest"]),
+            ("mv", &["--no-clobber", "--force", "source", "dest"]),
+            ("cp", &["-rn", "/a", "/b"]),
+            ("mv", &["-n", "-f", "/a", "/b"]),
+        ];
+        for (program, args) in cases {
+            for imported in [true, false] {
+                assert_eq!(
+                    classify_command_risk(&command(program, args, imported)),
+                    RiskLevel::Confirmation,
+                    "{program} {args:?} (imported={imported}) must be confirmation-risk"
+                );
+            }
+        }
     }
 
     #[test]

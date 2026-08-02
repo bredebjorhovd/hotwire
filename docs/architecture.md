@@ -143,9 +143,10 @@ a timeout, and a visible-terminal flag (default on for development commands).
 Before any review or execution the spec is resolved into an immutable
 `ResolvedPlan` — exact working directory and full environment snapshot — so
 approval and execution operate on the same plan. `classify_argv` is
-fail-closed: destructive programs, *any* shell interpreter command-string form
-(`sh`/`bash`/`zsh` `-c`, including combined options), `cp`/`mv` without a
-proven no-overwrite flag, `git` outside the safe-subcommand list
+fail-closed: destructive programs (including every `cp`/`mv`, which can
+overwrite an existing destination even without `-f`), *any* shell interpreter
+command-string form (`sh`/`bash`/`zsh` `-c`, including combined options),
+`git` outside the safe-subcommand list
 (`status`/`log`/`diff`/`show`/`fetch`), and arbitrary imported executables are
 all confirmation-risk. `CommandRunner`
 is the *only* public execution path and **enforces** review-before-execute on

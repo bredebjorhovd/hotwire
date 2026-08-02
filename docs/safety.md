@@ -66,16 +66,16 @@ cancellation coverage.
 `classify_argv` maps every command to `RiskLevel`, fail-closed:
 
 - **Confirmation** — destructive programs (`rm`, `dd`, `mkfs`, `diskutil`,
-  `shutdown`, `chmod`, …); *any* shell interpreter command-string form
-  (`sh`/`bash`/`zsh` `-c`, including combined options like `-lc`) because a
-  shell payload is arbitrary code that cannot be reasoned about by name;
-  `cp`/`mv` without a proven no-overwrite flag (`-n`/`--no-clobber`), since
-  they can overwrite an existing destination even without `-f`; `git` outside a
-  safe-subcommand list (`status`/`log`/`diff`/`show`/`fetch` only — `rm`,
-  `clean`, `reset`, `push --force`, `branch -D`, `restore`,
-  `checkout -- <path>`, `stash drop`, and unknown subcommands all fail closed);
-  and arbitrary executables from imported profiles (anything not on the
-  approved-CLI list).
+  `shutdown`, `chmod`, …) and **every `cp`/`mv` invocation** (they can
+  overwrite an existing destination even without `-f`, and no flag combination
+  proves otherwise — `-n` with a later `-f`/`--force` is platform-dependent);
+  *any* shell interpreter command-string form (`sh`/`bash`/`zsh` `-c`,
+  including combined options like `-lc`) because a shell payload is arbitrary
+  code that cannot be reasoned about by name; `git` outside a safe-subcommand
+  list (`status`/`log`/`diff`/`show`/`fetch` only — `rm`, `clean`, `reset`,
+  `push --force`, `branch -D`, `restore`, `checkout -- <path>`, `stash drop`,
+  and unknown subcommands all fail closed); and arbitrary executables from
+  imported profiles (anything not on the approved-CLI list).
 - **Low** — approved CLIs (`open`, `git status`, `herdr`, `claude`, …) and
   non-destructive user-authored commands.
 
