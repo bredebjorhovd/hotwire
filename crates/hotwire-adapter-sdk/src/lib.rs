@@ -122,6 +122,21 @@ pub trait Adapter: Send + Sync {
     /// Returns [`AdapterError::UnknownExecution`] when `execution_id` does not
     /// belong to this adapter.
     async fn cancel(&self, execution_id: &str) -> Result<(), AdapterError>;
+
+    /// Ends a hold interaction previously started by [`Adapter::execute`].
+    ///
+    /// The runtime calls this when the physical key of a `hold` binding is
+    /// released (e.g. releasing a push-to-talk shortcut). It defaults to
+    /// [`Adapter::cancel`] so adapters only need to override it when "end a
+    /// hold" differs from "abort an execution".
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AdapterError::UnknownExecution`] when `execution_id` does not
+    /// belong to this adapter.
+    async fn release(&self, execution_id: &str) -> Result<(), AdapterError> {
+        self.cancel(execution_id).await
+    }
 }
 
 #[cfg(test)]

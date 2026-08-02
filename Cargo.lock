@@ -1277,6 +1277,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hotwire-router"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hotwire-adapter-sdk",
+ "hotwire-core",
+ "hotwire-input",
+ "hotwire-profile",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
 name = "hotwire-runner"
 version = "0.1.0"
 dependencies = [
