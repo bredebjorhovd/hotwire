@@ -5,6 +5,18 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The physical interaction a binding is triggered by.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Trigger {
+    /// A single key press (down then up).
+    Press,
+    /// A press-and-hold interaction; the action starts on down and ends on up.
+    Hold,
+    /// Two presses within a short window.
+    DoublePress,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyState {

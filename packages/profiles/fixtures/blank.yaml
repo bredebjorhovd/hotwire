@@ -1,0 +1,6 @@
+schemaVersion: 1
+id: blank
+name: Blank
+controlSurface: numpad
+enabled: false
+bindings: []

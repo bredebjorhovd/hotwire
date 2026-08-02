@@ -1,13 +1,13 @@
 [package]
-name = "hotwire-core"
+name = "hotwire-input-windows"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-serde.workspace = true
+hotwire-core = { path = "../hotwire-core" }
+hotwire-input = { path = "../hotwire-input" }
 
 [lints]
 workspace = true
-

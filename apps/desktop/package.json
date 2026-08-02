@@ -6,17 +6,21 @@
   "scripts": {
     "build": "tsc --noEmit && vite build",
     "dev": "vite",
+    "tauri": "tauri",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@hotwire/profiles": "workspace:*",
     "@hotwire/schema": "workspace:*",
+    "@tauri-apps/api": "^2.9.0",
     "@vitejs/plugin-react": "latest",
     "vite": "latest",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.9.0",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "typescript": "^5.9.2",
