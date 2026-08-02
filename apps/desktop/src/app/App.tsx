@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "../components/Button";
-import { loadFixtureProfile } from "../features/catalog/fixtures";
+import { loadFixtureProfile, loadFixtureYaml } from "../features/catalog/fixtures";
 import { useTheme } from "../features/board/useTheme";
 import { BoardScreen } from "../features/board/BoardScreen";
 import { Wizard, type WizardChoices } from "../features/wizard/Wizard";
 import {
   emitMockActionReceipt,
+  activateProfileYaml,
   getAppStatus,
   isRunningInTauri,
   runAdapterAction,
@@ -36,7 +37,10 @@ export function App() {
   }, []);
 
   const finishSetup = (choices: WizardChoices) => {
-    if (choices.profileId) setActiveProfileId(choices.profileId);
+    if (choices.profileId) {
+      setActiveProfileId(choices.profileId);
+      void activateProfileYaml(loadFixtureYaml(choices.profileId));
+    }
     setMode("board");
   };
 

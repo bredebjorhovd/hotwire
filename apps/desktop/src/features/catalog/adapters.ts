@@ -17,6 +17,14 @@ export const adapters: AdapterManifest[] = [
     configSchema: {},
   },
   {
+    id: "comet",
+    name: "Comet",
+    version: "0.1.0",
+    icon: "comet",
+    capabilities: ["focus", "new_task", "continue", "review", "accept", "reject"],
+    configSchema: { type: "object", properties: { ipcPort: { type: "integer" } } },
+  },
+  {
     id: "papegoye",
     name: "Papegøye",
     version: "0.1.0",

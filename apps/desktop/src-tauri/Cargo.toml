@@ -14,6 +14,8 @@ tauri-build.workspace = true
 
 [dependencies]
 hotwire-adapter-herdr = { path = "../../../adapters/herdr" }
+hotwire-adapter-comet = { path = "../../../adapters/comet" }
+hotwire-adapter-tools = { path = "../../../adapters/tools" }
 hotwire-adapter-papegoye = { path = "../../../adapters/papegoye" }
 hotwire-adapter-sdk = { path = "../../../crates/hotwire-adapter-sdk" }
 hotwire-core = { path = "../../../crates/hotwire-core" }

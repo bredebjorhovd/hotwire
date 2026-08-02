@@ -1,0 +1,62 @@
+schemaVersion: 1
+id: comet-numpad
+name: Comet Numpad
+controlSurface: numpad
+enabled: true
+bindings:
+  - id: comet-focus
+    physicalCode: Numpad5
+    trigger: press
+    actionId: app.open_or_focus
+    adapterId: comet
+    consumeOriginal: true
+    config:
+      ipcPort: 27654
+  - id: comet-continue
+    physicalCode: NumpadEnter
+    trigger: press
+    actionId: agent.continue
+    adapterId: comet
+    consumeOriginal: true
+    config:
+      ipcPort: 27654
+  - id: comet-new
+    physicalCode: Numpad7
+    trigger: press
+    actionId: agent.new
+    adapterId: comet
+    consumeOriginal: true
+    config:
+      ipcPort: 27654
+  - id: comet-plan
+    physicalCode: Numpad8
+    trigger: press
+    actionId: agent.plan
+    adapterId: comet
+    consumeOriginal: true
+    config:
+      ipcPort: 27654
+  - id: comet-review
+    physicalCode: Numpad9
+    trigger: press
+    actionId: agent.review
+    adapterId: comet
+    consumeOriginal: true
+    config:
+      ipcPort: 27654
+  - id: comet-accept
+    physicalCode: NumpadAdd
+    trigger: press
+    actionId: agent.accept
+    adapterId: comet
+    consumeOriginal: true
+    config:
+      ipcPort: 27654
+  - id: comet-reject
+    physicalCode: NumpadDecimal
+    trigger: press
+    actionId: agent.reject
+    adapterId: comet
+    consumeOriginal: true
+    config:
+      ipcPort: 27654

@@ -20,6 +20,11 @@ const starters: Array<{
     description: "Focus Herdr and drive agents from the board.",
   },
   {
+    id: "comet-numpad",
+    title: "Comet",
+    description: "Use Comet as the agent runtime on the classic layout.",
+  },
+  {
     id: "claude-numpad",
     title: "Claude Code",
     description: "Launch Claude Code and continue sessions.",

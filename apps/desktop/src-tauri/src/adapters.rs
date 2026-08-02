@@ -22,11 +22,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use hotwire_adapter_comet::CometAdapter;
 use hotwire_adapter_herdr::{default_platform as herdr_platform, HerdrAdapter};
 use hotwire_adapter_papegoye::{default_platform as papegoye_platform, PapegoyeAdapter};
 use hotwire_adapter_sdk::{
     ActionInvocation, ActionResult, DetectionResult, ExecutionContext, ValidationResult,
 };
+use hotwire_adapter_tools::ToolAdapter;
 use hotwire_core::{ActionReceipt, ActionStatus, Trigger};
 use hotwire_router::AdapterRegistry;
 use serde_json::Value;
@@ -64,6 +66,19 @@ impl AdapterState {
         registry
             .register(Arc::new(HerdrAdapter::new(herdr_platform())))
             .expect("herdr adapter registers exactly once");
+        registry
+            .register(Arc::new(CometAdapter::new()))
+            .expect("comet adapter registers exactly once");
+        for (id, name, capabilities) in [
+            ("claude-code", "Claude Code", &["launch", "prompt"][..]),
+            ("codex", "Codex", &["launch", "prompt"][..]),
+            ("terminal", "Terminal", &["open", "run"][..]),
+            ("git", "Git", &["diff", "commit", "pr"][..]),
+        ] {
+            registry
+                .register(Arc::new(ToolAdapter::new(id, name, capabilities)))
+                .expect("tool adapter registers exactly once");
+        }
         registry
             .register(Arc::new(PapegoyeAdapter::new(papegoye_platform())))
             .expect("papegoye adapter registers exactly once");
@@ -133,6 +148,16 @@ impl AdapterState {
                 timestamp: now_nanos(),
             },
         };
+        self.run_invocation(invocation, physical_code).await
+    }
+
+    /// Runs a router-produced invocation while preserving its profile,
+    /// binding, and execution identity.
+    pub async fn run_invocation(
+        &self,
+        invocation: ActionInvocation,
+        physical_code: &str,
+    ) -> ActionReceipt {
         let _gate = self.ops.lock().await;
         {
             let lifecycle = self.lifecycle.lock().expect("lifecycle lock");

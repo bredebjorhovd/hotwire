@@ -128,6 +128,13 @@ export async function validateProfileYaml(
   return invoke<ProfileValidationReport>("validate_profile", { yaml });
 }
 
+/** Activates the selected profile in the native event router. */
+export async function activateProfileYaml(yaml: string): Promise<void> {
+  if (isRunningInTauri()) {
+    await invoke("activate_profile", { yaml });
+  }
+}
+
 /**
  * Reveals and focuses the configuration window (menu-bar "Open Hotwire…").
  *

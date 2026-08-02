@@ -22,9 +22,9 @@ pub struct AppStatus {
     pub app_version: String,
     /// Profile schema version this build accepts.
     pub profile_schema_version: u32,
-    /// Active native input backend, or `"none"` before capture lands.
+    /// Active native input backend.
     pub input_backend: &'static str,
-    /// Whether low-level capture is available yet.
+    /// Whether the native capture backend is compiled into this shell.
     pub capture_available: bool,
 }
 
@@ -43,8 +43,8 @@ pub fn app_status() -> AppStatus {
     AppStatus {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         profile_schema_version: SCHEMA_VERSION,
-        input_backend: "none",
-        capture_available: false,
+        input_backend: "macos-quartz",
+        capture_available: true,
     }
 }
 
@@ -63,6 +63,16 @@ pub fn validate_profile(yaml: String) -> ProfileValidationReport {
             error: Some(error.to_string()),
         },
     }
+}
+
+/// Activates a validated profile for the native event router.
+#[tauri::command]
+pub fn activate_profile(
+    yaml: String,
+    state: tauri::State<'_, crate::state::ShellState>,
+) -> Result<(), String> {
+    let profile = parse_yaml(&yaml).map_err(|error| error.to_string())?;
+    state.activate_profile(profile)
 }
 
 /// Reveals and focuses the configuration window.
@@ -264,10 +274,10 @@ mod tests {
     }
 
     #[test]
-    fn app_status_reports_no_capture_yet() {
+    fn app_status_reports_native_capture_backend() {
         let status = app_status();
-        assert_eq!(status.input_backend, "none");
-        assert!(!status.capture_available);
+        assert_eq!(status.input_backend, "macos-quartz");
+        assert!(status.capture_available);
         assert_eq!(status.profile_schema_version, SCHEMA_VERSION);
     }
 

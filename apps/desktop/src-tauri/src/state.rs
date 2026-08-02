@@ -29,6 +29,7 @@ use std::sync::Mutex;
 
 use hotwire_core::ActionReceipt;
 use hotwire_input_macos::QuartzEventTap;
+use hotwire_router::{BindingRouter, RouterConfig};
 use tauri::menu::MenuItem;
 
 use crate::adapters::AdapterState;
@@ -55,6 +56,8 @@ pub struct ShellState {
     pub last_receipt: Mutex<Option<ActionReceipt>>,
     /// The adapter execution surface (ADP-001 vertical slice).
     pub adapters: AdapterState,
+    /// The validated active profile router fed by the native event tap.
+    router: Mutex<BindingRouter>,
     /// Serializes the pause/resume/shutdown lifecycle (tap + adapter).
     recovery: RecoveryGate,
 }
@@ -68,13 +71,93 @@ impl ShellState {
         pause_item: MenuItem<tauri::Wry>,
         adapters: AdapterState,
     ) -> Self {
+        let profile = hotwire_profile::parse_yaml(include_str!(
+            "../../../../packages/profiles/fixtures/ai-numpad.yaml"
+        ))
+        .expect("canonical AI Numpad fixture must remain valid");
         Self {
             tap,
             pause_item,
             last_receipt: Mutex::new(None),
             adapters,
+            router: Mutex::new(
+                BindingRouter::new(profile, RouterConfig::default())
+                    .expect("canonical AI Numpad fixture must be routable"),
+            ),
             recovery: RecoveryGate::default(),
         }
+    }
+
+    /// Configures the native tap for the active profile's assigned controls.
+    pub fn configure_capture(&self) {
+        let profile = hotwire_profile::parse_yaml(include_str!(
+            "../../../../packages/profiles/fixtures/ai-numpad.yaml"
+        ))
+        .expect("canonical AI Numpad fixture must remain valid");
+        self.configure_profile(&profile);
+    }
+
+    /// Activates a validated profile and updates the native capture policy.
+    pub fn activate_profile(&self, profile: hotwire_profile::Profile) -> Result<(), String> {
+        let router = BindingRouter::new(profile.clone(), RouterConfig::default())
+            .map_err(|error| error.to_string())?;
+        *self.router.lock().expect("router lock") = router;
+        self.configure_profile(&profile);
+        Ok(())
+    }
+
+    fn configure_profile(&self, profile: &hotwire_profile::Profile) {
+        let keys = profile
+            .bindings
+            .iter()
+            .filter(|binding| binding.enabled)
+            .map(|binding| binding.physical_code.clone())
+            .collect::<Vec<_>>();
+        self.tap.set_captured_keys(&keys);
+        self.tap.set_capture_mode(match profile.capture_mode {
+            hotwire_profile::CaptureMode::Capture => hotwire_input_macos::CaptureMode::Capture,
+            hotwire_profile::CaptureMode::ModifiedCapture => {
+                hotwire_input_macos::CaptureMode::Capture
+            }
+            hotwire_profile::CaptureMode::Passthrough => {
+                hotwire_input_macos::CaptureMode::Passthrough
+            }
+        });
+    }
+
+    /// Routes one event off the Quartz callback thread and publishes all
+    /// resulting adapter receipts to the live board.
+    pub async fn route_event(&self, app: &tauri::AppHandle, event: hotwire_core::PhysicalKeyEvent) {
+        let outcome = {
+            let mut router = self.router.lock().expect("router lock");
+            router.on_event(&event)
+        };
+
+        for invocation in outcome.invocations {
+            let receipt = self
+                .adapters
+                .run_invocation(invocation, &event.physical_code)
+                .await;
+            self.record_and_emit(app, receipt);
+        }
+        for release in outcome.releases {
+            let receipt = self
+                .adapters
+                .release(
+                    &release.adapter_id,
+                    &release.execution_id,
+                    &release.physical_code,
+                )
+                .await;
+            self.record_and_emit(app, receipt);
+        }
+    }
+
+    fn record_and_emit(&self, app: &tauri::AppHandle, receipt: ActionReceipt) {
+        if let Ok(mut last) = self.last_receipt.lock() {
+            *last = Some(receipt.clone());
+        }
+        let _ = crate::events::emit_action_receipt(app, &receipt);
     }
 
     /// Whether the shell is currently paused (its adapter holds released).
@@ -89,6 +172,7 @@ impl ShellState {
     /// Returns how many adapter holds were released.
     pub async fn pause(&self) -> usize {
         let released = pause_recovery(&self.tap, &self.adapters, &self.recovery).await;
+        self.router.lock().expect("router lock").reset();
         sync_pause_label(&self.pause_item, self.tap.is_paused());
         released
     }
@@ -107,7 +191,9 @@ impl ShellState {
     ///
     /// Returns how many adapter holds were released.
     pub async fn shutdown(&self) -> usize {
-        shutdown_recovery(&self.tap, &self.adapters, &self.recovery).await
+        let released = shutdown_recovery(&self.tap, &self.adapters, &self.recovery).await;
+        self.router.lock().expect("router lock").reset();
+        released
     }
 }
 
