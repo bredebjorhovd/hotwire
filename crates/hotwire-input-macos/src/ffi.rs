@@ -33,13 +33,20 @@ pub fn process_is_trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 
-/// Returns the event timestamp in microseconds since system startup.
+/// Returns the event timestamp in nanoseconds since system startup.
 ///
-/// `PhysicalKeyEvent::timestamp_ns` is this value scaled to nanoseconds so
-/// trigger timing stays aligned with the OS event stream.
+/// `CGEventTimestamp` is already elapsed nanoseconds (not microseconds), so it
+/// is assigned to `PhysicalKeyEvent::timestamp_ns` directly without scaling.
 #[must_use]
-pub fn event_timestamp_us(event: &CGEvent) -> u64 {
+pub fn event_timestamp_ns(event: &CGEvent) -> u64 {
     unsafe { CGEventGetTimestamp(event.as_ptr() as *const c_void) }
+}
+
+/// Overrides the timestamp of an event. Used by tests to pin an exact
+/// nanosecond value and establish the unit contract.
+#[cfg(test)]
+pub fn set_event_timestamp(event: &CGEvent, timestamp_ns: u64) {
+    unsafe { CGEventSetTimestamp(event.as_ptr() as *const c_void, timestamp_ns) }
 }
 
 /// Returns the run-loop mode covering normal and modal sessions, the mode the
@@ -58,6 +65,8 @@ pub fn default_mode() -> CFRunLoopMode {
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGEventGetTimestamp(event: *const c_void) -> u64;
+    #[cfg(test)]
+    fn CGEventSetTimestamp(event: *const c_void, timestamp: u64);
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]

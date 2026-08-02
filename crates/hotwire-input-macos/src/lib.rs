@@ -19,7 +19,11 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
+use core_graphics::event::{
+    CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
+};
 use hotwire_core::PhysicalKeyEvent;
 use hotwire_input::{BackendError, InputBackend};
 
@@ -50,6 +54,10 @@ pub struct QuartzEventTap {
     shared: Arc<tap::TapShared>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
+
+/// How long [`QuartzEventTap::start`] waits for the tap thread to come up
+/// before failing the startup handshake.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
@@ -141,16 +149,16 @@ impl QuartzEventTap {
     /// Starts the capture tap and begins delivering normalized events to
     /// `sink`.
     ///
+    /// This is a synchronous startup: it waits until the tap thread reports
+    /// that the event tap is running, so a failure to create the tap or its
+    /// run-loop source surfaces here as an error (and the thread slot is
+    /// cleaned up, allowing a retry).
+    ///
     /// # Errors
     ///
     /// Returns [`BackendError::Start`] when the process lacks Accessibility
-    /// trust or the tap is already running.
+    /// trust, the tap is already running, or the tap thread failed to come up.
     pub fn start(&self, sink: Sender<PhysicalKeyEvent>) -> Result<(), BackendError> {
-        if lock(&self.thread).is_some() {
-            return Err(BackendError::Start(
-                "event tap is already running".to_string(),
-            ));
-        }
         if !ffi::process_is_trusted() {
             return Err(BackendError::Start(
                 "Accessibility/Input Monitoring permission is not granted; \
@@ -159,17 +167,64 @@ impl QuartzEventTap {
             ));
         }
 
+        let callback_shared = Arc::clone(&self.shared);
+        self.start_with_factory(sink, move || {
+            CGEventTap::new(
+                CGEventTapLocation::HID,
+                CGEventTapPlacement::HeadInsertEventTap,
+                CGEventTapOptions::Default,
+                vec![
+                    CGEventType::KeyDown,
+                    CGEventType::KeyUp,
+                    CGEventType::FlagsChanged,
+                ],
+                move |_proxy, etype, event| tap::tap_callback(&callback_shared, etype, event),
+            )
+        })
+    }
+
+    /// `start` with the tap factory injected, so tests can exercise the
+    /// startup handshake without needing an OS permission failure.
+    fn start_with_factory(
+        &self,
+        sink: Sender<PhysicalKeyEvent>,
+        create_tap: impl FnOnce() -> Result<CGEventTap<'static>, ()> + Send + 'static,
+    ) -> Result<(), BackendError> {
+        if lock(&self.thread).is_some() {
+            return Err(BackendError::Start(
+                "event tap is already running".to_string(),
+            ));
+        }
+
         *lock(&self.shared.sink) = Some(sink);
         self.shared.stop_requested.store(false, Ordering::Release);
 
+        let (startup_tx, startup_rx) = std::sync::mpsc::channel();
         let shared = Arc::clone(&self.shared);
         let handle = thread::Builder::new()
             .name("hotwire-quartz-tap".to_string())
-            .spawn(move || tap::run_tap_thread(shared))
+            .spawn(move || tap::run_tap_thread(shared, startup_tx, create_tap))
             .map_err(|error| BackendError::Start(format!("failed to spawn tap thread: {error}")))?;
-
         *lock(&self.thread) = Some(handle);
-        Ok(())
+
+        match startup_rx.recv_timeout(STARTUP_TIMEOUT) {
+            Ok(tap::StartupStatus::Ready) => Ok(()),
+            Ok(tap::StartupStatus::Failed(reason)) => {
+                if let Some(handle) = lock(&self.thread).take() {
+                    let _ = handle.join();
+                }
+                Err(BackendError::Start(reason))
+            }
+            Err(_) => {
+                self.shared.stop_requested.store(true, Ordering::Release);
+                if let Some(handle) = lock(&self.thread).take() {
+                    let _ = handle.join();
+                }
+                Err(BackendError::Start(
+                    "timed out waiting for the event tap to start".to_string(),
+                ))
+            }
+        }
     }
 
     /// Stops the tap and releases any logically held keys.
@@ -251,5 +306,36 @@ mod tests {
         let gate = lock(&tap.shared.gate);
         assert!(gate.policy().captured_keys().contains("Numpad5"));
         assert_eq!(gate.policy().mode(), CaptureMode::Capture);
+    }
+
+    #[test]
+    fn a_fresh_gate_captures_no_keys_by_default() {
+        let tap = macos_backend();
+
+        assert!(
+            lock(&tap.shared.gate).policy().captured_keys().is_empty(),
+            "a fresh gate must not contain a placeholder empty-string key"
+        );
+    }
+
+    #[test]
+    fn startup_failure_returns_error_and_clears_the_thread_slot() {
+        let tap = macos_backend();
+        let (sink, _rx) = std::sync::mpsc::channel();
+
+        let error = tap
+            .start_with_factory(sink, || Err(()))
+            .expect_err("a failing tap factory must surface synchronously");
+        assert!(matches!(error, BackendError::Start(_)));
+        assert!(
+            lock(&tap.thread).is_none(),
+            "the thread slot must be cleaned up after a failed start"
+        );
+
+        let (sink, _rx) = std::sync::mpsc::channel();
+        let error = tap
+            .start_with_factory(sink, || Err(()))
+            .expect_err("a retry must be allowed after a failed start");
+        assert!(matches!(error, BackendError::Start(_)));
     }
 }

@@ -15,11 +15,17 @@ through, without ever breaking the keyboard.
 - **Normalization** — every key event is converted to the shared
   `hotwire-core::PhysicalKeyEvent` (physical code, scan code, state,
   modifiers, ns timestamp, repeat/injected flags) inside the callback and
-  enqueued on a channel. The callback never executes actions (spec §10.3).
+  enqueued on a channel. `CGEventTimestamp` is already elapsed nanoseconds, so
+  it is copied verbatim — never scaled. The callback never executes actions
+  (spec §10.3).
 - **Injection-loop prevention** — Hotwire's own injected events carry a marker
   in the event user-data field and are always passed through untouched.
 - **Emergency bypass** — `Control` + `Option` + `Command` + `Escape` pauses and
-  resumes capture. It cannot be remapped by a profile.
+  resumes capture. It cannot be remapped by a profile: the chord event itself
+  is never routed as a binding, and while capture is paused no events are
+  routed to the action sink at all (the decision/observability channel keeps
+  receiving them). Ordinary `Passthrough` mode still routes events for
+  observation without suppressing them.
 - **Fail-open** — if capture is paused, the tap is disabled, or the process
   crashes, every key passes through normally. No key is ever held logically:
   `stop()` (and shutdown) posts key-ups for any key Hotwire still holds.

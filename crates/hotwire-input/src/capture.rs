@@ -80,6 +80,9 @@ pub struct GateDecision {
     pub suppressed: bool,
     /// Capture is currently paused by the emergency bypass.
     pub paused: bool,
+    /// This exact event is the emergency-bypass chord press and must never be
+    /// routed as a binding (the chord cannot be remapped).
+    pub bypass_chord: bool,
 }
 
 /// Combines the [`CapturePolicy`] with the [`EmergencyBypass`] into the single
@@ -100,7 +103,7 @@ impl CaptureGate {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            policy: CapturePolicy::new(CaptureMode::Capture, [String::new()]),
+            policy: CapturePolicy::new(CaptureMode::Capture, []),
             bypass: EmergencyBypass::new(),
         }
     }
@@ -138,10 +141,11 @@ impl CaptureGate {
     /// must not execute actions.
     #[must_use]
     pub fn decide(&mut self, event: &PhysicalKeyEvent) -> GateDecision {
-        let _ = self.bypass.on_event(event);
+        let bypass_chord = self.bypass.on_event(event).is_some();
         GateDecision {
             suppressed: !self.bypass.is_paused() && self.policy.should_suppress(event),
             paused: self.bypass.is_paused(),
+            bypass_chord,
         }
     }
 }
@@ -229,6 +233,7 @@ mod tests {
             GateDecision {
                 suppressed: false,
                 paused: true,
+                bypass_chord: true,
             }
         );
         assert!(gate.is_paused());
@@ -239,6 +244,7 @@ mod tests {
             GateDecision {
                 suppressed: false,
                 paused: false,
+                bypass_chord: true,
             }
         );
         assert!(gate.decide(&event("Numpad5", false, false)).suppressed);

@@ -36,7 +36,7 @@ fn normalize_key(event: &CGEvent, state: KeyState) -> PhysicalKeyEvent {
         physical_code: keycode::physical_name(scan_code as u16),
         state,
         modifiers: modifier_state(event.get_flags()),
-        timestamp_ns: ffi::event_timestamp_us(event).saturating_mul(1000),
+        timestamp_ns: ffi::event_timestamp_ns(event),
         is_repeat: event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT) != 0,
         is_injected: is_injected(event),
     }
@@ -68,7 +68,7 @@ fn normalize_flags_changed(event: &CGEvent) -> Option<PhysicalKeyEvent> {
         physical_code: physical_code.into(),
         state: if down { KeyState::Down } else { KeyState::Up },
         modifiers: modifier_state(flags),
-        timestamp_ns: ffi::event_timestamp_us(event).saturating_mul(1000),
+        timestamp_ns: ffi::event_timestamp_ns(event),
         is_repeat: false,
         is_injected: is_injected(event),
     })
@@ -113,10 +113,22 @@ mod tests {
         assert_eq!(normalized.scan_code, u32::from(KeyCode::ANSI_KEYPAD_5));
         assert!(!normalized.is_repeat);
         assert!(!normalized.is_injected);
-        assert_eq!(
-            normalized.timestamp_ns,
-            ffi::event_timestamp_us(&event).saturating_mul(1000)
-        );
+        assert_eq!(normalized.timestamp_ns, ffi::event_timestamp_ns(&event));
+    }
+
+    #[test]
+    fn timestamps_are_passed_through_in_nanoseconds() {
+        // `CGEventTimestamp` is already elapsed nanoseconds since startup; the
+        // unit contract is that normalization copies it verbatim. Pinning an
+        // exact value guards against ever re-scaling it (the former µs×1000
+        // bug inflated every event delta by 1,000 and broke double-press
+        // timing).
+        let timestamp_ns = 12_345_678_901_234;
+        let event = key_event(KeyCode::ANSI_KEYPAD_5, true);
+        ffi::set_event_timestamp(&event, timestamp_ns);
+
+        let normalized = normalize_event(&event).expect("key event normalizes");
+        assert_eq!(normalized.timestamp_ns, timestamp_ns);
     }
 
     #[test]

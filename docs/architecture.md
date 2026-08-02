@@ -65,12 +65,14 @@ implement, with `stop()` releasing resources fail-open.
 The macOS proof (INP-001) runs a `CGEventTap` on a dedicated thread. The
 callback normalizes each key event to `PhysicalKeyEvent`, passes Hotwire's own
 injected events (tagged with `INJECTED_MARKER` in the event user-data field)
-straight through, enqueues everything on a channel, and returns `Drop` only for
-bound keys while capture is active. The tap re-enables itself after
-`TapDisabledByTimeout`, goes fail-open on `TapDisabledByUserInput` and on any
-permission loss, and `stop()` releases every logically held key so shutdown can
-never leave one down. See `docs/input-proof.md` for setup and manual
-verification.
+straight through, and returns `Drop` only for bound keys while capture is
+active. It routes events to the action sink except while capture is paused and
+except for the emergency-bypass chord itself (which can never be remapped);
+the decision/observability channel always receives every event. The tap
+re-enables itself after `TapDisabledByTimeout`, goes fail-open on
+`TapDisabledByUserInput` and on any permission loss, and `stop()` releases
+every logically held key so shutdown can never leave one down. See
+`docs/input-proof.md` for setup and manual verification.
 
 ### Binding routing and execution (`hotwire-router`)
 
