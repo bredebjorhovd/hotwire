@@ -4,8 +4,11 @@ import {
   ACTION_RECEIPT_EVENT,
   emitMockActionReceipt,
   getAppStatus,
+  getDiagnostics,
   isRunningInTauri,
+  pauseCapture,
   quitDesktop,
+  resumeCapture,
   showMainWindow,
   subscribeActionReceipts,
   validateProfileYaml,
@@ -55,6 +58,22 @@ describe("ipc bridge outside Tauri", () => {
 
   it("never fakes a mock receipt without the shell", async () => {
     await expect(emitMockActionReceipt()).resolves.toBeNull();
+  });
+
+  it("reports a safe diagnostics preview with no sensitive detail", async () => {
+    await expect(getDiagnostics()).resolves.toMatchObject({
+      appVersion: "browser-preview",
+      capture: {
+        permission: "authorized",
+        status: "stopped",
+        paused: false,
+      },
+    });
+  });
+
+  it("degrades pause and resume to browser no-ops", async () => {
+    await expect(pauseCapture()).resolves.toBe(false);
+    await expect(resumeCapture()).resolves.toBe(false);
   });
 
   it("subscribing outside Tauri returns a safe no-op unsubscriber", () => {

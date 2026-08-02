@@ -217,6 +217,23 @@ impl BindingRouter {
         self.layer_held
     }
 
+    /// Resets all interaction state: the layer key, per-code active
+    /// interactions, consumption, and every trigger detector.
+    ///
+    /// Recovery surfaces (pausing capture, shutting down) call this so a held
+    /// or partially-completed interaction that the runtime cancelled does not
+    /// linger and mis-route the next press after capture resumes.
+    pub fn reset(&mut self) {
+        self.layer_held = false;
+        for code in self.codes.values_mut() {
+            code.active = None;
+            code.consuming = false;
+            for detector in &mut code.detectors {
+                detector.detector.reset();
+            }
+        }
+    }
+
     fn expire_stale_waits(&mut self, now_ns: u64) {
         for code in self.codes.values_mut() {
             for detector in &mut code.detectors {

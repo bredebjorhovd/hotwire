@@ -24,27 +24,25 @@ use std::time::Duration;
 use core_graphics::event::{
     CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
 };
-use hotwire_core::PhysicalKeyEvent;
+use hotwire_core::{CaptureStatus, PhysicalKeyEvent};
 use hotwire_input::{BackendError, InputBackend};
 
 pub use crate::inject::{InjectError, MacEventInjector, INJECTED_MARKER};
 pub use crate::keycode::{from_physical_name, is_numpad, physical_name};
 pub use crate::normalize::{is_injected, modifier_state, normalize_event};
 pub use crate::tap::{TapDecision, TapStatus};
+pub use hotwire_core::CaptureHealth;
 pub use hotwire_input::{
     BypassAction, CaptureGate, CaptureMode, CapturePolicy, EmergencyBypass, GateDecision,
-    ModifierChord,
+    ModifierChord, PermissionStatus,
 };
 
 /// macOS Accessibility/Input Monitoring trust for this process.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PermissionStatus {
-    /// The process can create event taps and post events.
-    Authorized,
-    /// The process has not been granted the Accessibility permission.
-    Denied,
-}
-
+///
+/// The [`PermissionStatus`] type lives in `hotwire-core` (re-exported through
+/// `hotwire-input`) so every backend and the diagnostics surface share one
+/// model; this crate re-exports it.
+///
 /// The macOS Quartz event-tap backend.
 ///
 /// A [`QuartzEventTap`] owns one tap thread. Configure it, call
@@ -131,6 +129,27 @@ impl QuartzEventTap {
     #[must_use]
     pub fn status(&self) -> TapStatus {
         *lock(&self.shared.status)
+    }
+
+    /// Returns a diagnostics snapshot of capture health.
+    ///
+    /// Combines the live permission state, tap status, and pause flag into the
+    /// neutral [`CaptureHealth`] model that diagnostics and the fail-open gate
+    /// consume. The snapshot carries status categories only — never typed
+    /// text, prompts, secrets, or key sequences.
+    #[must_use]
+    pub fn health(&self) -> CaptureHealth {
+        CaptureHealth {
+            permission: self.permission_status(),
+            status: match self.status() {
+                TapStatus::Stopped => CaptureStatus::Stopped,
+                TapStatus::Running => CaptureStatus::Running,
+                TapStatus::DisabledByTimeout => CaptureStatus::DisabledByTimeout,
+                TapStatus::DisabledByUserInput => CaptureStatus::DisabledByUserInput,
+                TapStatus::StartFailed => CaptureStatus::StartFailed,
+            },
+            paused: self.is_paused(),
+        }
     }
 
     /// Returns an injector that shares this tap's held-key tracking.
@@ -316,6 +335,23 @@ mod tests {
             lock(&tap.shared.gate).policy().captured_keys().is_empty(),
             "a fresh gate must not contain a placeholder empty-string key"
         );
+    }
+
+    #[test]
+    fn health_reflects_tap_state_and_fails_open_on_secure_input() {
+        let tap = macos_backend();
+
+        let stopped = tap.health();
+        assert_eq!(stopped.status, hotwire_core::CaptureStatus::Stopped);
+        assert!(stopped.fail_open(), "a stopped tap must fail open");
+        assert!(!stopped.ready());
+
+        // A secure-input disable is fail-open; a timeout disable recovers.
+        *lock(&tap.shared.status) = crate::tap::TapStatus::DisabledByUserInput;
+        assert!(tap.health().fail_open());
+        *lock(&tap.shared.status) = crate::tap::TapStatus::DisabledByTimeout;
+        assert!(!tap.health().fail_open());
+        assert!(!tap.health().ready());
     }
 
     #[test]
