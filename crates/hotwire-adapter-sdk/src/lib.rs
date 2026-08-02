@@ -121,6 +121,19 @@ impl KeyCombo {
         keys.push(self.key);
         keys
     }
+
+    /// The order keycodes must be released: primary key first, then modifiers
+    /// in reverse.
+    ///
+    /// Releasing the primary key before its modifiers is the inverse of the
+    /// press order, so the receiving application never observes the key-up
+    /// outside the configured modifier chord.
+    #[must_use]
+    pub fn release_order(&self) -> Vec<u16> {
+        let mut keys = vec![self.key];
+        keys.extend(self.modifiers.iter().rev());
+        keys
+    }
 }
 
 /// Parses a shortcut string like `"fn+space"` or `"F17"` into a [`KeyCombo`].
@@ -315,6 +328,11 @@ mod tests {
         assert_eq!(combo.modifiers, vec![0x3F]);
         assert_eq!(combo.key, 0x31);
         assert_eq!(combo.all_keycodes(), vec![0x3F, 0x31]);
+        assert_eq!(
+            combo.release_order(),
+            vec![0x31, 0x3F],
+            "primary key up first"
+        );
 
         let bare = parse_shortcut("F17", modifier, key).expect("F17 parses");
         assert!(bare.modifiers.is_empty());

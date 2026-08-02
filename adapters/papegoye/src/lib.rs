@@ -62,6 +62,10 @@ pub struct PapegoyeAdapter {
     /// keycode → how many active executions hold it; a down/up is posted only
     /// on the 0→1 and 1→0 transitions so repeats never occur.
     held: Mutex<HashMap<u16, u32>>,
+    /// Serializes the 0→1 injection so a failing injector rolls back before
+    /// any later execution reserves, which would otherwise leave it with a
+    /// phantom (reserved-but-not-down) hold.
+    inject: tokio::sync::Mutex<()>,
 }
 
 impl PapegoyeAdapter {
@@ -97,6 +101,7 @@ impl PapegoyeAdapter {
             platform,
             active: Mutex::new(HashMap::new()),
             held: Mutex::new(HashMap::new()),
+            inject: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -134,6 +139,10 @@ impl PapegoyeAdapter {
     /// Ends a hold for `execution_id`, posting exactly one key-up per keycode
     /// the execution holds. Shared keycodes only release when the last holder
     /// releases, so an up is never posted twice.
+    ///
+    /// Key-ups are posted in [`KeyCombo::release_order`] — primary key first,
+    /// then modifiers in reverse — so the receiving application never observes
+    /// the key-up outside the configured modifier chord.
     async fn end_hold(&self, execution_id: &str) -> Result<(), AdapterError> {
         let combo = self
             .active
@@ -145,7 +154,7 @@ impl PapegoyeAdapter {
         let to_release = {
             let mut held = self.held.lock().expect("held lock");
             let mut to_release = Vec::new();
-            for code in combo.all_keycodes() {
+            for code in combo.release_order() {
                 if let Some(count) = held.get_mut(&code) {
                     *count = count.saturating_sub(1);
                     if *count == 0 {
@@ -165,11 +174,15 @@ impl PapegoyeAdapter {
     ///
     /// The execution is reserved atomically (before any `await`), so two
     /// concurrent starts of the same execution id cannot both observe it
-    /// absent and double-book the reference counts. Keycodes already held by
-    /// another execution are skipped so a repeated down is never posted. On a
+    /// absent and double-book the reference counts. The 0→1 injection is
+    /// serialized behind [`PapegoyeAdapter::inject`], so when the first holder
+    /// of a combo fails partway through posting its downs, it rolls back fully
+    /// before a later execution reserves — a later execution therefore always
+    /// either posts a real hold or fails, never a phantom `Started`. On a
     /// partial failure the reservation is rolled back and the successfully
     /// posted downs are released again (fail-open).
     async fn start_hold(&self, execution_id: &str, combo: &KeyCombo) -> ActionResult {
+        let _inject = self.inject.lock().await;
         let to_down = {
             let mut active = self.active.lock().expect("active lock");
             if active.contains_key(execution_id) {
@@ -243,8 +256,8 @@ impl PapegoyeAdapter {
                 }
             }
         }
-        for code in posted.iter().rev() {
-            let _ = self.platform.key_up(*code).await;
+        for code in combo.release_order() {
+            let _ = self.platform.key_up(code).await;
         }
         ActionResult {
             execution_id: execution_id.to_string(),

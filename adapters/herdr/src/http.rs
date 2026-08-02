@@ -102,11 +102,13 @@ fn content_length(head: &str) -> Option<usize> {
         .filter(|length| *length > 0)
 }
 
-/// Splits a base URL into host, port, and path prefix.
+/// Splits a base URL into a normalized host, port, and path prefix.
 ///
 /// Only plaintext `http://` loopback targets are accepted (`localhost`, the
 /// `127/8` range, or `::1`); a remote host is rejected so the local-API
-/// contract can never point at the network. A missing port defaults to `80`.
+/// contract can never point at the network. The authority is fully validated:
+/// bracketed IPv6 literals, ports, user-info rejection, and any junk after a
+/// closing `]` are handled. A missing port defaults to `80`.
 pub(crate) fn parse_base_url(base_url: &str) -> Result<(String, u16, String), String> {
     let rest = base_url.strip_prefix("http://").ok_or_else(|| {
         format!("unsupported base URL `{base_url}`: only `http://` loopback is supported")
@@ -115,18 +117,7 @@ pub(crate) fn parse_base_url(base_url: &str) -> Result<(String, u16, String), St
         Some((authority, path)) => (authority, format!("/{path}")),
         None => (rest, String::new()),
     };
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((host, port)) => {
-            let port: u16 = port
-                .parse()
-                .map_err(|_| format!("invalid port in `{base_url}`"))?;
-            (host.to_string(), port)
-        }
-        None => (authority.to_string(), 80),
-    };
-    if host.is_empty() {
-        return Err(format!("missing host in `{base_url}`"));
-    }
+    let (host, port) = parse_authority(authority, base_url)?;
     if !is_loopback_host(&host) {
         return Err(format!(
             "`{base_url}` is not a loopback URL; only localhost, 127/8, or ::1 are allowed"
@@ -135,14 +126,66 @@ pub(crate) fn parse_base_url(base_url: &str) -> Result<(String, u16, String), St
     Ok((host, port, path))
 }
 
+/// Parses an HTTP authority into a normalized host (brackets stripped) and
+/// port. Rejects user-info (`user:pass@`), malformed IPv6 literals, junk after
+/// a closing `]`, empty ports, and non-numeric or out-of-range ports.
+fn parse_authority(authority: &str, base_url: &str) -> Result<(String, u16), String> {
+    if authority.is_empty() {
+        return Err(format!("missing host in `{base_url}`"));
+    }
+    if authority.contains('@') {
+        return Err(format!(
+            "`{base_url}` must not include user info in the authority"
+        ));
+    }
+    if let Some(rest) = authority.strip_prefix('[') {
+        let (host, after_bracket) = rest
+            .split_once(']')
+            .ok_or_else(|| format!("unterminated IPv6 literal in `{base_url}`"))?;
+        if host.is_empty() {
+            return Err(format!("empty IPv6 literal in `{base_url}`"));
+        }
+        let port = match after_bracket {
+            "" => 80,
+            port_spec => {
+                let port_spec = port_spec
+                    .strip_prefix(':')
+                    .ok_or_else(|| format!("unexpected text after IPv6 literal in `{base_url}`"))?;
+                parse_port(port_spec, base_url)?
+            }
+        };
+        Ok((host.to_string(), port))
+    } else {
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((host, port)) => (host, parse_port(port, base_url)?),
+            None => (authority, 80),
+        };
+        if host.is_empty() {
+            return Err(format!("missing host in `{base_url}`"));
+        }
+        Ok((host.to_string(), port))
+    }
+}
+
+/// Parses a port string into a `u16`, rejecting empty, non-numeric,
+/// out-of-range, and zero values (port `0` is not a valid target).
+fn parse_port(port: &str, base_url: &str) -> Result<u16, String> {
+    if port.is_empty() {
+        return Err(format!("empty port in `{base_url}`"));
+    }
+    let port: u16 = port
+        .parse()
+        .map_err(|_| format!("invalid port in `{base_url}`"))?;
+    if port == 0 {
+        return Err(format!("invalid port in `{base_url}`"));
+    }
+    Ok(port)
+}
+
 /// Whether `host` is a loopback target: `localhost`, the `127/8` IPv4 range, or
-/// `::1`. Bracketed IPv6 literals (`[::1]`) are accepted.
+/// `::1`. The host must already be normalized (no brackets).
 #[must_use]
 fn is_loopback_host(host: &str) -> bool {
-    let host = host
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(host);
     if host == "localhost" {
         return true;
     }
@@ -200,14 +243,43 @@ mod tests {
     fn accepts_loopback_hosts_including_ipv6() {
         for url in [
             "http://localhost:7398",
+            "http://localhost",
             "http://127.0.0.1",
             "http://127.0.0.2:7398",
             "http://[::1]:7398",
+            "http://[::1]",
         ] {
             let (host, port, _) =
                 parse_base_url(url).unwrap_or_else(|error| panic!("{url}: {error}"));
             assert!(!host.is_empty(), "{url}");
             assert!(port > 0, "{url}");
+        }
+    }
+
+    #[test]
+    fn parses_bracketed_ipv6_with_and_without_port() {
+        let (host, port, _) = parse_base_url("http://[::1]:7398").expect("with port");
+        assert_eq!(host, "::1", "brackets are stripped for the normalized host");
+        assert_eq!(port, 7398);
+
+        let (host, port, _) = parse_base_url("http://[::1]").expect("without port");
+        assert_eq!(host, "::1");
+        assert_eq!(port, 80, "missing port defaults to 80");
+    }
+
+    #[test]
+    fn rejects_malformed_authorities() {
+        for url in [
+            "http://user:pass@127.0.0.1:7398", // user info
+            "http://[::1]evil.example",        // junk after the closing bracket
+            "http://[::1]:notaport",           // non-numeric port
+            "http://[::1]:0",                  // port 0 is invalid
+            "http://[::1",                     // unterminated IPv6 literal
+            "http://[]:7398",                  // empty IPv6 literal
+            "http://127.0.0.1:",               // empty port
+            "http://:",                        // empty host and port
+        ] {
+            assert!(parse_base_url(url).is_err(), "{url} must be rejected");
         }
     }
 

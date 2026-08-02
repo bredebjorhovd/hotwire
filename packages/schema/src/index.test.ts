@@ -216,6 +216,22 @@ describe("herdrConfigSchema", () => {
     expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://localhost:7398" }).success).toBe(true);
     expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://127.0.0.2:7398" }).success).toBe(true);
     expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://[::1]:7398" }).success).toBe(true);
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://[::1]" }).success).toBe(true);
+  });
+
+  it("rejects malformed authorities in parity with Rust", () => {
+    for (const bad of [
+      "http://user:pass@127.0.0.1:7398", // user info
+      "http://[::1]evil.example", // junk after the closing bracket
+      "http://[::1]:notaport", // non-numeric port
+      "http://[::1]:0", // port 0 is invalid
+      "http://[::1", // unterminated IPv6 literal
+      "http://[]:7398", // empty IPv6 literal
+      "http://127.0.0.1:", // empty port
+      "http://:", // empty host and port
+    ]) {
+      expect(herdrConfigSchema.safeParse({ apiBaseUrl: bad }).success).toBe(false);
+    }
   });
 });
 

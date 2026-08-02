@@ -115,21 +115,39 @@ export type AdapterManifest = z.infer<typeof adapterManifestSchema>;
 
 /**
  * Whether a base URL targets loopback only: `localhost`, the `127/8` IPv4
- * range, or `::1`. Mirrors the Rust loopback check in `adapters/herdr`.
+ * range, or `::1`. Mirrors the Rust authority parsing in `adapters/herdr`
+ * (`http.rs`): bracketed IPv6, ports, user info, and junk after `]` are fully
+ * validated.
  */
 export function isLoopbackBaseUrl(value: string): boolean {
   if (!value.startsWith("http://")) return false;
   const rest = value.slice("http://".length);
   const authority = rest.split("/")[0] ?? "";
-  if (authority === "") return false;
+  if (authority === "" || authority.includes("@")) return false;
 
-  let host = authority;
-  if (host.startsWith("[")) {
-    const end = host.indexOf("]");
-    if (end === -1) return false;
-    host = host.slice(1, end);
+  let host: string;
+  if (authority.startsWith("[")) {
+    const bracketEnd = authority.indexOf("]");
+    if (bracketEnd === -1) return false;
+    const afterBracket = authority.slice(bracketEnd + 1);
+    if (afterBracket !== "" && !afterBracket.startsWith(":")) return false;
+    host = authority.slice(1, bracketEnd);
+    if (host === "") return false;
+    if (afterBracket.startsWith(":")) {
+      const portSpec = afterBracket.slice(1);
+      if (!isValidPort(portSpec)) return false;
+    }
   } else {
-    host = host.split(":")[0] ?? "";
+    const lastColon = authority.lastIndexOf(":");
+    if (lastColon !== -1) {
+      const hostPart = authority.slice(0, lastColon);
+      if (hostPart === "") return false;
+      const portSpec = authority.slice(lastColon + 1);
+      if (!isValidPort(portSpec)) return false;
+      host = hostPart;
+    } else {
+      host = authority;
+    }
   }
 
   if (host === "localhost" || host === "::1") return true;
@@ -140,6 +158,13 @@ export function isLoopbackBaseUrl(value: string): boolean {
     octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255) &&
     Number(octets[0]) === 127
   );
+}
+
+/** Whether `spec` is a numeric port in the valid `1..=65535` range. */
+function isValidPort(spec: string): boolean {
+  if (!/^\d+$/.test(spec)) return false;
+  const port = Number(spec);
+  return port >= 1 && port <= 65535;
 }
 
 /**

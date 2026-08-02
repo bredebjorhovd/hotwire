@@ -241,9 +241,11 @@ pub mod macos {
 
     /// Posts a shortcut down and up through `keys`.
     ///
-    /// On any partial failure the keys already posted are released again in
-    /// reverse order (fail-open, spec §15.5) so a key-down error can never
-    /// leave a logical key held.
+    /// On any partial failure the keys still held are released again in
+    /// reverse order (fail-open, spec §15.5), so a key-down or key-up error can
+    /// never leave a logical key held. Successfully released keys are dropped
+    /// from the tracked set so a later-up failure never re-posts a duplicate
+    /// key-up.
     fn send_combo(keys: &impl ShortcutPoster, combo: &KeyCombo) -> Result<(), HerdrError> {
         let mut posted = Vec::new();
         for code in combo.all_keycodes() {
@@ -255,11 +257,12 @@ pub mod macos {
                 }
             }
         }
-        for code in combo.all_keycodes().iter().rev() {
-            if let Err(error) = keys.post_up(*code) {
+        for code in combo.release_order() {
+            if let Err(error) = keys.post_up(code) {
                 release_posted(keys, &posted);
                 return Err(shortcut_error_string(error));
             }
+            posted.retain(|held| *held != code);
         }
         Ok(())
     }
@@ -446,6 +449,27 @@ pub mod macos {
             assert!(send_combo(&poster, &combo).is_ok());
             assert_eq!(poster.downs.borrow().as_slice(), &[0x3F, 0x37, 0x31]);
             assert_eq!(poster.ups.borrow().as_slice(), &[0x31, 0x37, 0x3F]);
+        }
+
+        #[test]
+        fn send_combo_never_posts_duplicate_ups_on_a_later_up_failure() {
+            let combo = KeyCombo {
+                modifiers: vec![0x3F, 0x37],
+                key: 0x31,
+            };
+            // The key (first up) succeeds and is dropped from the tracked set;
+            // the second up (0x37) fails, so only 0x37 and 0x3F are still held
+            // and must be released — never a duplicate 0x31.
+            let poster = FailingPoster::new().fail_up_on(2);
+
+            let result = send_combo(&poster, &combo);
+            assert!(result.is_err());
+            assert_eq!(poster.downs.borrow().as_slice(), &[0x3F, 0x37, 0x31]);
+            assert_eq!(
+                poster.ups.borrow().as_slice(),
+                &[0x31, 0x37, 0x3F],
+                "every key released exactly once"
+            );
         }
     }
 }

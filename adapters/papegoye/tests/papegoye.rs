@@ -5,6 +5,7 @@
 //! real keyboard. These tests pin the spec invariants (spec §13.5): a down is
 //! always paired with exactly one up, never repeated, and never left stuck.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -24,13 +25,15 @@ struct MockEvents {
 
 /// A scriptable Papegøye platform that records every injected key event.
 ///
-/// `hold_down` is an optional gate: when set, `key_down` blocks on it until the
-/// test releases it, so concurrent-execution races can be reproduced
-/// deterministically.
+/// `hold_down` is an optional gate: when set, the next `key_down` blocks on it
+/// until the test releases it, so concurrent-execution races can be reproduced
+/// deterministically. `fail_next_down` makes the next `key_down` fail (once),
+/// so partial-injection failures can be reproduced.
 struct MockPlatform {
     app_present: bool,
     events: Arc<Mutex<MockEvents>>,
     hold_down: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
+    fail_next_down: Arc<AtomicBool>,
 }
 
 impl MockPlatform {
@@ -39,6 +42,7 @@ impl MockPlatform {
             app_present: true,
             events: Arc::new(Mutex::new(MockEvents::default())),
             hold_down: Arc::new(Mutex::new(None)),
+            fail_next_down: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -78,6 +82,9 @@ impl PapegoyePlatform for MockPlatform {
         let gate = self.hold_down.lock().expect("hold down lock").take();
         if let Some(gate) = gate {
             let _ = gate.await;
+        }
+        if self.fail_next_down.swap(false, Ordering::SeqCst) {
+            return Err(PapegoyeError::Inject("down failed".into()));
         }
         let mut events = self.events.lock().expect("events lock");
         events.downs.push(keycode);
@@ -152,7 +159,7 @@ async fn hold_posts_down_once_on_start_and_up_once_on_release() {
 
     let events = events.lock().expect("events lock");
     assert_eq!(events.downs, vec![0x3F, 0x31], "each keycode down once");
-    assert_eq!(events.ups, vec![0x3F, 0x31], "each keycode up once");
+    assert_eq!(events.ups, vec![0x31, 0x3F], "each keycode up once");
     assert_eq!(events.downs.len(), events.ups.len(), "no stuck keys");
 }
 
@@ -194,8 +201,8 @@ async fn cancel_releases_the_held_key_during_cancellation() {
         assert_eq!(events.downs, vec![0x3F, 0x31]);
         assert_eq!(
             events.ups,
-            vec![0x3F, 0x31],
-            "release is attempted on cancel"
+            vec![0x31, 0x3F],
+            "release is attempted on cancel, primary key up first"
         );
         assert_eq!(events.downs.len(), events.ups.len());
     }
@@ -248,7 +255,7 @@ async fn overlapping_executions_release_shared_keys_exactly_once() {
     adapter.release("exec-2").await.expect("release succeeds");
     {
         let events = events.lock().expect("events lock");
-        assert_eq!(events.ups, vec![0x3F, 0x31], "exactly one up per keycode");
+        assert_eq!(events.ups, vec![0x31, 0x3F], "exactly one up per keycode");
         assert_eq!(events.downs.len(), events.ups.len());
     }
 }
@@ -383,8 +390,76 @@ async fn concurrent_starts_with_the_same_execution_id_reserve_once() {
     assert_eq!(events.downs, vec![0x3F, 0x31], "down posted once");
     assert_eq!(
         events.ups,
-        vec![0x3F, 0x31],
+        vec![0x31, 0x3F],
         "no stuck key after one release"
+    );
+}
+
+#[tokio::test]
+async fn overlapping_starts_after_a_failed_injection_post_a_real_hold() {
+    // exec-1 starts first, parks inside its gated key-down and then fails the
+    // injection. exec-2 starts while exec-1 is parked. The 0→1 injection is
+    // serialized, so exec-2 must not reserve during exec-1's partial state:
+    // it waits, then posts a real hold itself. A phantom `Started` (reported
+    // without any physical keys down) is the regression this guards against.
+    let (release_tx, release_rx) = oneshot::channel();
+    let platform = MockPlatform::new().with_hold_down(release_rx);
+    platform.fail_next_down.store(true, Ordering::SeqCst);
+    let events = platform.events.clone();
+    let adapter = Arc::new(PapegoyeAdapter::new(Arc::new(platform)));
+
+    let first = {
+        let adapter = Arc::clone(&adapter);
+        let invocation = invocation("exec-1", shortcut_config());
+        tokio::spawn(async move { adapter.execute(&invocation).await })
+    };
+    // Let exec-1 reach its gated key-down while holding the injection lock.
+    tokio::task::yield_now().await;
+
+    let second = {
+        let adapter = Arc::clone(&adapter);
+        let invocation = invocation("exec-2", shortcut_config());
+        tokio::spawn(async move { adapter.execute(&invocation).await })
+    };
+    tokio::task::yield_now().await;
+
+    // exec-1's key-down now fails; it rolls back and releases the lock.
+    release_tx.send(()).ok();
+
+    let (first_result, second_result) = tokio::join!(first, second);
+    assert_eq!(
+        first_result.expect("first task ran").status,
+        ActionStatus::Failed
+    );
+    let second = second_result.expect("second task ran");
+    assert_eq!(
+        second.status,
+        ActionStatus::Started,
+        "a later execution must post a real hold, never a phantom Started"
+    );
+
+    // exec-2 injected the full hold itself.
+    {
+        let events = events.lock().expect("events lock");
+        assert_eq!(
+            events.downs,
+            vec![0x3F, 0x31],
+            "the surviving hold is physically down"
+        );
+        assert!(events.ups.is_empty(), "nothing was left half-released");
+    }
+
+    // Releasing the surviving hold balances every down.
+    adapter
+        .release(&second.execution_id)
+        .await
+        .expect("release succeeds");
+    let events = events.lock().expect("events lock");
+    assert_eq!(events.downs.len(), events.ups.len(), "no stuck keys");
+    assert_eq!(
+        events.ups,
+        vec![0x31, 0x3F],
+        "key released before modifiers"
     );
 }
 
