@@ -78,14 +78,34 @@ pub struct Profile {
 impl Profile {
     /// Validates the profile against the current schema.
     ///
+    /// Mirrors the constraints in `packages/schema`: `schemaVersion` must be
+    /// [`SCHEMA_VERSION`]; `id` and `name` must be non-empty; `layerKey`, when
+    /// present, must be non-empty; every binding needs a non-empty `id`,
+    /// `physicalCode`, `actionId`, and `adapterId`; and binding `config` must
+    /// be a JSON object.
+    ///
     /// # Errors
     ///
     /// Returns [`ProfileError::UnsupportedSchemaVersion`] when the profile
     /// declares a schema version other than [`SCHEMA_VERSION`], and
-    /// [`ProfileError::Invalid`] when any binding is malformed.
+    /// [`ProfileError::Invalid`] when any required field is empty or a
+    /// binding's `config` is not an object.
     pub fn validate(&self) -> Result<(), ProfileError> {
         if self.schema_version != SCHEMA_VERSION {
             return Err(ProfileError::UnsupportedSchemaVersion(self.schema_version));
+        }
+        if self.id.is_empty() {
+            return Err(ProfileError::Invalid("profile id must not be empty".into()));
+        }
+        if self.name.is_empty() {
+            return Err(ProfileError::Invalid(
+                "profile name must not be empty".into(),
+            ));
+        }
+        if self.layer_key.as_ref().is_some_and(String::is_empty) {
+            return Err(ProfileError::Invalid(
+                "layerKey must not be empty when present".into(),
+            ));
         }
         for (index, binding) in self.bindings.iter().enumerate() {
             if binding.id.is_empty() {
@@ -93,9 +113,21 @@ impl Profile {
                     "binding at index {index} has an empty id"
                 )));
             }
-            if binding.physical_code.is_empty() {
+            for (field, value) in [
+                ("physicalCode", binding.physical_code.as_str()),
+                ("actionId", binding.action_id.as_str()),
+                ("adapterId", binding.adapter_id.as_str()),
+            ] {
+                if value.is_empty() {
+                    return Err(ProfileError::Invalid(format!(
+                        "binding {} has an empty {field}",
+                        binding.id
+                    )));
+                }
+            }
+            if !binding.config.is_object() {
                 return Err(ProfileError::Invalid(format!(
-                    "binding {} has an empty physical code",
+                    "binding {} config must be an object",
                     binding.id
                 )));
             }
@@ -203,5 +235,51 @@ bindings:
         let restored = parse_json(&json).expect("profile should parse back");
 
         assert_eq!(profile, restored);
+    }
+
+    #[test]
+    fn validate_rejects_empty_and_non_object_fields() {
+        use serde_json::json;
+
+        type CaseMutator = fn(&mut Profile);
+
+        // Mirrors the `packages/schema` constraints: every profile/binding
+        // identifier must be non-empty and binding `config` must be an object.
+        let cases: &[(&str, CaseMutator)] = &[
+            ("empty profile id", |profile| profile.id.clear()),
+            ("empty profile name", |profile| profile.name.clear()),
+            ("empty layerKey", |profile| {
+                profile.layer_key = Some(String::new());
+            }),
+            ("empty binding id", |profile| profile.bindings[0].id.clear()),
+            ("empty binding physicalCode", |profile| {
+                profile.bindings[0].physical_code.clear();
+            }),
+            ("empty binding actionId", |profile| {
+                profile.bindings[0].action_id.clear();
+            }),
+            ("empty binding adapterId", |profile| {
+                profile.bindings[0].adapter_id.clear();
+            }),
+            ("non-object binding config", |profile| {
+                profile.bindings[0].config = json!("not-an-object");
+            }),
+        ];
+
+        for (label, mutate) in cases {
+            let mut profile = parse_yaml(EXAMPLE_YAML).expect("example profile should parse");
+            mutate(&mut profile);
+
+            assert!(
+                matches!(profile.validate(), Err(ProfileError::Invalid(_))),
+                "expected {label} to be rejected"
+            );
+
+            let json = serde_json::to_string(&profile).expect("profile should serialize");
+            assert!(
+                parse_yaml(&json).is_err(),
+                "expected {label} to be rejected at parse time"
+            );
+        }
     }
 }
