@@ -57,6 +57,9 @@ pub enum RouterError {
     /// The profile failed schema validation; routing refuses to start.
     #[error("cannot route an invalid profile: {0}")]
     InvalidProfile(#[from] hotwire_profile::ProfileError),
+    /// The profile is disabled and must not produce actions.
+    #[error("profile is disabled")]
+    ProfileDisabled,
     /// The profile has no enabled bindings to route.
     #[error("profile has no enabled bindings to route")]
     EmptyProfile,
@@ -133,17 +136,23 @@ struct Fire {
 impl BindingRouter {
     /// Builds a router from a validated profile.
     ///
-    /// Enabled bindings are pre-grouped per physical code; a binding whose
-    /// `enabled` flag is `false` is never routed and never matches. Profiles
-    /// without any enabled binding are rejected.
+    /// A disabled profile is rejected so it can never produce actions;
+    /// enabling a profile means constructing a router for it. Enabled
+    /// bindings are pre-grouped per physical code; a binding whose `enabled`
+    /// flag is `false` is never routed and never matches. Profiles without
+    /// any enabled binding are rejected.
     ///
     /// # Errors
     ///
     /// Returns [`RouterError::InvalidProfile`] when the profile fails
-    /// validation and [`RouterError::EmptyProfile`] when it has no enabled
-    /// bindings.
+    /// validation, [`RouterError::ProfileDisabled`] when the profile's
+    /// `enabled` flag is `false`, and [`RouterError::EmptyProfile`] when it
+    /// has no enabled bindings.
     pub fn new(profile: Profile, config: RouterConfig) -> Result<Self, RouterError> {
         profile.validate()?;
+        if !profile.enabled {
+            return Err(RouterError::ProfileDisabled);
+        }
 
         let mut codes: HashMap<String, CodeState> = HashMap::new();
         for binding in &profile.bindings {
@@ -257,9 +266,29 @@ fn handle_down(
 ) {
     let fire = collect_fire(code, event, layer_key_is_set, layer_held, capture_mode);
     let Some(fire) = fire else {
-        outcome.consume_original = code.consuming;
-        if code.active.is_none() {
-            code.consuming = false;
+        // A double-press binding that armed on this down (or was already
+        // armed) keeps the key consumed, so its first press never leaks to
+        // the OS while the second press is still expected. Passthrough and
+        // inactive modified-capture profiles never consume here.
+        let armed_consumes = code.detectors.iter().any(|detector| {
+            detector.binding.trigger == Trigger::DoublePress
+                && detector.detector.is_armed()
+                && fire_allowed(
+                    &detector.binding,
+                    layer_key_is_set,
+                    layer_held,
+                    capture_mode,
+                )
+                && consume_allowed(&detector.binding, layer_held, capture_mode)
+        });
+        if armed_consumes {
+            code.consuming = true;
+            outcome.consume_original = true;
+        } else {
+            outcome.consume_original = code.consuming;
+            if code.active.is_none() {
+                code.consuming = false;
+            }
         }
         return;
     };

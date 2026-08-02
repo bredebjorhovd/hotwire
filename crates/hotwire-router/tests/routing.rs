@@ -248,13 +248,13 @@ fn double_press_fires_only_on_a_fast_second_press() {
                 (150_000_000, KeyState::Down),
             ],
             expect_fires: true,
-            expect_first_consume: false,
+            expect_first_consume: true,
         },
         Case {
             name: "a single press never fires",
             timing: &[(0, KeyState::Down), (50_000_000, KeyState::Up)],
             expect_fires: false,
-            expect_first_consume: false,
+            expect_first_consume: true,
         },
         Case {
             name: "a slow second press starts over instead of firing",
@@ -264,7 +264,7 @@ fn double_press_fires_only_on_a_fast_second_press() {
                 (400_000_000, KeyState::Down),
             ],
             expect_fires: false,
-            expect_first_consume: false,
+            expect_first_consume: true,
         },
     ];
 
@@ -300,6 +300,228 @@ fn double_press_fires_only_on_a_fast_second_press() {
             case.name
         );
     }
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn double_press_consumption_follows_capture_mode_and_binding_flag() {
+    struct Step {
+        state: KeyState,
+        at_ns: u64,
+        consume: bool,
+        fires: usize,
+    }
+    struct Case {
+        name: &'static str,
+        capture_mode: CaptureMode,
+        consume_original: bool,
+        layer_key: Option<&'static str>,
+        hold_layer: bool,
+        expect_fires: usize,
+        steps: &'static [Step],
+    }
+
+    const QUICK: &[Step] = &[
+        Step {
+            state: KeyState::Down,
+            at_ns: 0,
+            consume: true,
+            fires: 0,
+        },
+        Step {
+            state: KeyState::Up,
+            at_ns: 50_000_000,
+            consume: true,
+            fires: 0,
+        },
+        Step {
+            state: KeyState::Down,
+            at_ns: 150_000_000,
+            consume: true,
+            fires: 1,
+        },
+        Step {
+            state: KeyState::Up,
+            at_ns: 200_000_000,
+            consume: true,
+            fires: 0,
+        },
+    ];
+    const UNCONSUMED: &[Step] = &[
+        Step {
+            state: KeyState::Down,
+            at_ns: 0,
+            consume: false,
+            fires: 0,
+        },
+        Step {
+            state: KeyState::Up,
+            at_ns: 50_000_000,
+            consume: false,
+            fires: 0,
+        },
+        Step {
+            state: KeyState::Down,
+            at_ns: 150_000_000,
+            consume: false,
+            fires: 1,
+        },
+        Step {
+            state: KeyState::Up,
+            at_ns: 200_000_000,
+            consume: false,
+            fires: 0,
+        },
+    ];
+    const INERT: &[Step] = &[
+        Step {
+            state: KeyState::Down,
+            at_ns: 0,
+            consume: false,
+            fires: 0,
+        },
+        Step {
+            state: KeyState::Up,
+            at_ns: 50_000_000,
+            consume: false,
+            fires: 0,
+        },
+        Step {
+            state: KeyState::Down,
+            at_ns: 150_000_000,
+            consume: false,
+            fires: 0,
+        },
+        Step {
+            state: KeyState::Up,
+            at_ns: 200_000_000,
+            consume: false,
+            fires: 0,
+        },
+    ];
+
+    let cases: &[Case] = &[
+        Case {
+            name: "capture consumes the armed first press through completion",
+            capture_mode: CaptureMode::Capture,
+            consume_original: true,
+            layer_key: None,
+            hold_layer: false,
+            expect_fires: 1,
+            steps: QUICK,
+        },
+        Case {
+            name: "passthrough observes without consuming",
+            capture_mode: CaptureMode::Passthrough,
+            consume_original: true,
+            layer_key: None,
+            hold_layer: false,
+            expect_fires: 1,
+            steps: UNCONSUMED,
+        },
+        Case {
+            name: "modified capture consumes the armed first press while the layer is held",
+            capture_mode: CaptureMode::ModifiedCapture,
+            consume_original: true,
+            layer_key: Some("NumLock"),
+            hold_layer: true,
+            expect_fires: 1,
+            steps: QUICK,
+        },
+        Case {
+            name: "modified capture is inert without the layer",
+            capture_mode: CaptureMode::ModifiedCapture,
+            consume_original: true,
+            layer_key: Some("NumLock"),
+            hold_layer: false,
+            expect_fires: 0,
+            steps: INERT,
+        },
+        Case {
+            name: "consumeOriginal=false passes the first press through",
+            capture_mode: CaptureMode::Capture,
+            consume_original: false,
+            layer_key: None,
+            hold_layer: false,
+            expect_fires: 1,
+            steps: UNCONSUMED,
+        },
+    ];
+
+    for case in cases {
+        let dp = binding(
+            "dbl",
+            "Numpad0",
+            Trigger::DoublePress,
+            "app.double",
+            case.consume_original,
+        );
+        let mut router = BindingRouter::new(
+            profile_with(case.capture_mode, case.layer_key, vec![dp]),
+            RouterConfig::default(),
+        )
+        .expect("router should build");
+
+        if case.hold_layer {
+            let _ = router.on_event(&event(0, "NumLock", KeyState::Down));
+        }
+
+        let mut total_fires = 0;
+        for step in case.steps {
+            let outcome = router.on_event(&event(step.at_ns, "Numpad0", step.state));
+            total_fires += outcome.invocations.len();
+            assert_eq!(
+                outcome.invocations.len(),
+                step.fires,
+                "{} at t={} {:?}: unexpected fire count",
+                case.name,
+                step.at_ns,
+                step.state
+            );
+            assert_eq!(
+                outcome.consume_original, step.consume,
+                "{} at t={} {:?}: unexpected consume decision",
+                case.name, step.at_ns, step.state
+            );
+        }
+        assert_eq!(
+            total_fires, case.expect_fires,
+            "{}: unexpected total fire count",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn double_press_expiry_consumes_the_armed_first_press() {
+    let mut router = router(vec![binding(
+        "dbl",
+        "Numpad0",
+        Trigger::DoublePress,
+        "app.double",
+        true,
+    )]);
+
+    let first = router.on_event(&event(0, "Numpad0", KeyState::Down));
+    assert!(first.consume_original, "armed first press is consumed");
+
+    let first_up = router.on_event(&event(50_000_000, "Numpad0", KeyState::Up));
+    assert!(
+        first_up.consume_original,
+        "the first key-up of an armed double press is consumed"
+    );
+
+    router.on_tick(DOUBLE_PRESS_NS + 1);
+
+    let fresh = router.on_event(&event(400_000_000, "Numpad0", KeyState::Down));
+    assert!(
+        fresh.invocations.is_empty(),
+        "an expired wait must not fire on the next press"
+    );
+    assert!(
+        fresh.consume_original,
+        "the next lone press re-arms and stays consumed"
+    );
 }
 
 #[test]
@@ -458,6 +680,18 @@ fn construction_rejects_invalid_and_empty_profiles() {
     assert!(matches!(
         BindingRouter::new(no_bindings, RouterConfig::default()),
         Err(RouterError::EmptyProfile)
+    ));
+
+    let disabled = Profile {
+        enabled: false,
+        ..profile(
+            None,
+            vec![binding("b", "Numpad5", Trigger::Press, "app.x", true)],
+        )
+    };
+    assert!(matches!(
+        BindingRouter::new(disabled, RouterConfig::default()),
+        Err(RouterError::ProfileDisabled)
     ));
 
     let all_disabled = profile(

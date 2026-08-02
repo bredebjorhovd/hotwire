@@ -5,9 +5,24 @@ mod common;
 use std::sync::Arc;
 
 use hotwire_core::{ActionReceipt, ActionStatus, KeyState, Trigger};
-use hotwire_router::{HotwireRuntime, RouterConfig, RuntimeError};
+use hotwire_profile::Profile;
+use hotwire_router::{HotwireRuntime, RouterConfig, RouterError, RuntimeError};
 
 use crate::common::{binding, event, profile, TestAdapter};
+
+#[tokio::test]
+async fn disabled_profile_is_rejected_and_never_routes() {
+    let disabled = Profile {
+        enabled: false,
+        ..profile(
+            None,
+            vec![binding("b", "Numpad5", Trigger::Press, "app.x", true)],
+        )
+    };
+
+    let runtime = HotwireRuntime::new(disabled, RouterConfig::default());
+    assert!(matches!(runtime, Err(RouterError::ProfileDisabled)));
+}
 
 #[tokio::test]
 async fn press_dispatches_once_and_publishes_started_then_succeeded() {

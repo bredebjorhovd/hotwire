@@ -73,7 +73,14 @@ code, and for every event decides:
   held, and `passthrough` observes without ever consuming.
 - **Consumption** — `consumeOriginal` applies to the down that fired and its
   matching up (and to repeat downs while a hold is active), so a held key
-  never re-fires and never leaves a key logically held down.
+  never re-fires and never leaves a key logically held down. For a
+  `double_press`, consumption stays armed from the first press through its
+  key-up, so a mapped numpad digit never reaches the foreground app while the
+  second press is still expected.
+- **Disabled profiles** — `BindingRouter::new` rejects `Profile { enabled:
+  false }` with `RouterError::ProfileDisabled`; enabling a profile means
+  constructing a router for it, so a disabled profile can never produce an
+  action.
 - **Hold lifecycle** — `hold` fires once on down and releases exactly once on
   up (`RouteOutcome::releases`), so push-to-talk starts and stops cleanly.
 
