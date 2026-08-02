@@ -3,6 +3,7 @@ import {
   actionInvocationSchema,
   actionResultSchema,
   adapterManifestSchema,
+  bindingSchema,
   normalizePhysicalCode,
   profileSchema,
 } from "./index";
@@ -30,6 +31,74 @@ describe("profileSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("defaults captureMode to capture and layer to false", () => {
+    const result = profileSchema.safeParse({
+      schemaVersion: 1,
+      id: "ai-numpad",
+      name: "AI Numpad",
+      controlSurface: "numpad",
+      bindings: [
+        {
+          id: "open-herdr",
+          physicalCode: "Numpad5",
+          trigger: "press",
+          actionId: "app.open_or_focus",
+          adapterId: "herdr",
+          config: {},
+          consumeOriginal: true,
+        },
+      ],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.captureMode).toBe("capture");
+    expect(result.data.bindings[0]?.layer).toBe(false);
+  });
+
+  it("accepts a layer binding and every capture mode", () => {
+    for (const captureMode of ["capture", "modified_capture", "passthrough"]) {
+      const result = profileSchema.safeParse({
+        schemaVersion: 1,
+        id: "layered",
+        name: "Layered",
+        controlSurface: "numpad",
+        layerKey: "NumLock",
+        captureMode,
+        bindings: [
+          {
+            id: "alternate",
+            physicalCode: "Numpad7",
+            trigger: "press",
+            actionId: "app.alternate",
+            adapterId: "herdr",
+            config: {},
+            consumeOriginal: true,
+            layer: true,
+          },
+        ],
+      });
+
+      expect(result.success, `captureMode=${captureMode}`).toBe(true);
+      if (result.success) {
+        expect(result.data.bindings[0]?.layer).toBe(true);
+      }
+    }
+  });
+
+  it("rejects an invalid capture mode", () => {
+    expect(
+      profileSchema.safeParse({
+        schemaVersion: 1,
+        id: "bad",
+        name: "Bad",
+        controlSurface: "numpad",
+        captureMode: "everything",
+        bindings: [],
+      }).success,
+    ).toBe(false);
+  });
+
   it("rejects unknown schema versions", () => {
     expect(
       profileSchema.safeParse({
@@ -40,6 +109,24 @@ describe("profileSchema", () => {
         bindings: [],
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("bindingSchema", () => {
+  it("is inert when layer is omitted", () => {
+    const result = bindingSchema.safeParse({
+      id: "b",
+      physicalCode: "Numpad5",
+      trigger: "press",
+      actionId: "app.x",
+      adapterId: "herdr",
+      consumeOriginal: true,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.layer).toBe(false);
+    }
   });
 });
 

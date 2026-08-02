@@ -7,6 +7,7 @@ members = [
   "crates/hotwire-runner",
   "crates/hotwire-profile",
   "crates/hotwire-adapter-sdk",
+  "crates/hotwire-router",
   "apps/desktop/src-tauri",
 ]
 resolver = "2"

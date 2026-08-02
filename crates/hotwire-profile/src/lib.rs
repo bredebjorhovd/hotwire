@@ -44,6 +44,23 @@ pub enum ControlSurface {
     Manual,
 }
 
+/// How a profile treats key events that match its bindings.
+///
+/// Mirrors the three modes of spec §9.3: assigned keys are captured and
+/// consumed, captured only while a Hotwire layer key is held, or observed
+/// without ever being consumed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureMode {
+    /// Assigned keys are consumed according to each binding's `consumeOriginal`.
+    #[default]
+    Capture,
+    /// Keys only become Hotwire keys while the profile's layer key is held.
+    ModifiedCapture,
+    /// Observe/test without consuming; bindings still fire.
+    Passthrough,
+}
+
 /// A single physical-key to semantic-action mapping.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +75,11 @@ pub struct Binding {
     pub consume_original: bool,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// When `true`, this binding only fires while the profile's layer key is
+    /// held (spec §9.2 alternate-action model). Inert when the profile has no
+    /// `layerKey`.
+    #[serde(default)]
+    pub layer: bool,
 }
 
 /// A validated, activate-ready profile.
@@ -71,6 +93,8 @@ pub struct Profile {
     #[serde(default)]
     pub bindings: Vec<Binding>,
     pub layer_key: Option<String>,
+    #[serde(default = "default_capture_mode")]
+    pub capture_mode: CaptureMode,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
@@ -160,12 +184,36 @@ pub fn parse_json(input: &str) -> Result<Profile, ProfileError> {
     Ok(profile)
 }
 
+/// Serializes a profile to readable, shareable YAML.
+///
+/// # Errors
+///
+/// Returns [`ProfileError::InvalidYaml`] if the profile cannot be rendered to
+/// YAML.
+pub fn export_yaml(profile: &Profile) -> Result<String, ProfileError> {
+    Ok(serde_yaml::to_string(profile)?)
+}
+
+/// Serializes a profile to JSON.
+///
+/// # Errors
+///
+/// Returns [`ProfileError::InvalidJson`] if the profile cannot be rendered to
+/// JSON.
+pub fn export_json(profile: &Profile) -> Result<String, ProfileError> {
+    Ok(serde_json::to_string(profile)?)
+}
+
 fn default_config() -> Value {
     Value::Object(serde_json::Map::new())
 }
 
 const fn default_enabled() -> bool {
     true
+}
+
+const fn default_capture_mode() -> CaptureMode {
+    CaptureMode::Capture
 }
 
 #[cfg(test)]
@@ -203,9 +251,58 @@ bindings:
 
         assert_eq!(profile.schema_version, SCHEMA_VERSION);
         assert_eq!(profile.control_surface, ControlSurface::Numpad);
+        assert_eq!(profile.capture_mode, CaptureMode::Capture);
         assert_eq!(profile.bindings.len(), 2);
         assert_eq!(profile.bindings[0].adapter_id, "herdr");
+        assert!(!profile.bindings[0].layer);
         assert_eq!(profile.bindings[1].trigger, Trigger::Hold);
+    }
+
+    #[test]
+    fn omitted_layer_and_capture_mode_default_safely() {
+        let profile = parse_yaml(EXAMPLE_YAML).expect("example profile should parse");
+
+        assert_eq!(profile.capture_mode, CaptureMode::Capture);
+        for binding in &profile.bindings {
+            assert!(!binding.layer);
+        }
+    }
+
+    #[test]
+    fn capture_modes_parse_and_round_trip() {
+        // Table-driven: every capture mode must parse and survive an export.
+        let cases: &[(&str, CaptureMode)] = &[
+            ("capture", CaptureMode::Capture),
+            ("modified_capture", CaptureMode::ModifiedCapture),
+            ("passthrough", CaptureMode::Passthrough),
+        ];
+
+        for (yaml_value, expected) in cases {
+            let profile = parse_yaml(&format!(
+                "schemaVersion: 1\nid: p\nname: P\ncontrolSurface: numpad\ncaptureMode: {yaml_value}\nbindings: []"
+            ))
+            .expect("profile should parse");
+            assert_eq!(profile.capture_mode, *expected);
+
+            let exported = export_yaml(&profile).expect("profile should export");
+            let restored = parse_yaml(&exported).expect("exported profile should re-parse");
+            assert_eq!(restored.capture_mode, *expected);
+        }
+    }
+
+    #[test]
+    fn layer_bindings_parse_and_round_trip() {
+        let profile = parse_yaml(
+            "schemaVersion: 1\nid: p\nname: P\ncontrolSurface: numpad\nlayerKey: NumLock\nbindings:\n  - id: alternate\n    physicalCode: Numpad7\n    trigger: press\n    actionId: app.alternate\n    adapterId: herdr\n    consumeOriginal: true\n    layer: true\n",
+        )
+        .expect("profile should parse");
+
+        assert_eq!(profile.layer_key.as_deref(), Some("NumLock"));
+        assert!(profile.bindings[0].layer);
+
+        let exported = export_yaml(&profile).expect("profile should export");
+        let restored = parse_yaml(&exported).expect("exported profile should re-parse");
+        assert_eq!(profile, restored);
     }
 
     #[test]
@@ -231,8 +328,17 @@ bindings:
     #[test]
     fn json_round_trips_without_loss() {
         let profile = parse_yaml(EXAMPLE_YAML).expect("example profile should parse");
-        let json = serde_json::to_string(&profile).expect("profile should serialize");
+        let json = export_json(&profile).expect("profile should serialize");
         let restored = parse_json(&json).expect("profile should parse back");
+
+        assert_eq!(profile, restored);
+    }
+
+    #[test]
+    fn yaml_export_round_trips_without_loss() {
+        let profile = parse_yaml(EXAMPLE_YAML).expect("example profile should parse");
+        let exported = export_yaml(&profile).expect("profile should serialize");
+        let restored = parse_yaml(&exported).expect("profile should parse back");
 
         assert_eq!(profile, restored);
     }

@@ -10,18 +10,19 @@ routes:
 - `Numpad5 → OPEN_HERDR → launch or focus Herdr`
 - `Numpad0 hold → VOICE → hold Papegøye push-to-talk`
 
-This repository is the build foundation (BOOT-001) plus the Milestone 0
-interaction prototype (UX-001): a Tauri 2 + React desktop shell, a Rust
-workspace, shared schema and profile packages, CI, and the typed boundaries
-between input, actions, adapters, and profiles. No low-level capture is
-implemented here yet.
-
-The desktop app opens directly into an eight-screen first-run wizard — welcome,
-control surface, permission, hardware capture, starting profile, connected
-tools, live board test, and done — with a tactile numpad signature object,
+The build foundation (BOOT-001) established the Tauri 2 + React desktop
+shell, a Rust workspace, shared schema and profile packages, CI, and the typed
+boundaries between input, actions, adapters, and profiles. CORE-001 added the
+platform-neutral runtime: the press/hold/double-press state machines, layer
+and capture-mode behavior, `consumeOriginal` decisions, the adapter registry,
+cancellation, `ActionReceipt` events, and readable YAML import/export. UX-001
+added the Milestone 0 interaction prototype: an eight-screen first-run wizard
+(welcome, control surface, permission, hardware capture, starting profile,
+connected tools, live board test, done) with a tactile numpad signature object,
 dark/light tokens, animated signal-trace route receipts, keyboard navigation
 and reduced-motion support. The prototype is fixture-driven and renders fully
 in the browser (`pnpm dev`); the Rust shell adds the typed IPC boundary.
+Low-level keyboard capture is not implemented yet — that is INP-001.
 
 ## Repository layout
 
@@ -37,8 +38,9 @@ hotwire/
 │   ├── hotwire-input-macos/   Quartz event-tap seam (INP-001)
 │   ├── hotwire-input-windows/ WH_KEYBOARD_LL seam (later)
 │   ├── hotwire-runner/     command review + timeout/cancellation boundary
-│   ├── hotwire-profile/    profile model + YAML/JSON validation
-│   └── hotwire-adapter-sdk/   adapter execution contract
+│   ├── hotwire-profile/    profile model + YAML/JSON validation + export
+│   ├── hotwire-adapter-sdk/   adapter execution contract
+│   └── hotwire-router/     binding router, adapter registry, runtime, receipts
 ├── packages/
 │   ├── schema/             versioned Zod boundary types
 │   └── profiles/           YAML parsing/export + canonical fixtures
@@ -90,9 +92,11 @@ bar at the bottom of the prototype proves the Rust↔TypeScript IPC boundary
 | --- | --- | --- |
 | Normalized physical-key events | `hotwire-core::PhysicalKeyEvent` | — (native only) |
 | Triggers / state machine | `hotwire-input` | `triggerSchema` |
-| Semantic actions | — | `actionDefinitionSchema` |
+| Routing / layers / capture modes | `hotwire-router::BindingRouter` | `captureModeSchema` + `layer` |
 | Adapter execution | `hotwire-adapter-sdk` | `actionInvocationSchema` / `actionResultSchema` |
-| Profile validation | `hotwire-profile` | `@hotwire/schema` + `@hotwire/profiles` |
+| Adapter registry / runtime | `hotwire-router::AdapterRegistry` / `HotwireRuntime` | — (native only) |
+| Execution receipts | `hotwire-core::ActionReceipt` | — (native only) |
+| Profile validation + export | `hotwire-profile` | `@hotwire/schema` + `@hotwire/profiles` |
 
 Profiles are versioned, human-readable YAML. Imported profiles must validate
 before activation, and the Rust and TypeScript validators agree on the same
