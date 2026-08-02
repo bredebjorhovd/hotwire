@@ -28,3 +28,102 @@ bindings:
     adapterId: herdr
     consumeOriginal: true
     config: {}
+  - id: profile-switch
+    physicalCode: NumLock
+    trigger: press
+    actionId: profile.switch
+    adapterId: shortcut
+    consumeOriginal: true
+    config: {}
+  - id: launch-claude
+    physicalCode: NumpadDivide
+    trigger: press
+    actionId: claude.launch
+    adapterId: claude-code
+    consumeOriginal: true
+    config: {}
+  - id: launch-codex
+    physicalCode: NumpadMultiply
+    trigger: press
+    actionId: codex.launch
+    adapterId: codex
+    consumeOriginal: true
+    config: {}
+  - id: voice-shortcut
+    physicalCode: NumpadSubtract
+    trigger: press
+    actionId: voice.input
+    adapterId: papegoye
+    consumeOriginal: true
+    config:
+      shortcut: "fn+space"
+  - id: agent-new
+    physicalCode: Numpad7
+    trigger: press
+    actionId: agent.new
+    adapterId: herdr
+    consumeOriginal: true
+    config: {}
+  - id: agent-plan
+    physicalCode: Numpad8
+    trigger: press
+    actionId: agent.plan
+    adapterId: herdr
+    consumeOriginal: true
+    config: {}
+  - id: agent-review
+    physicalCode: Numpad9
+    trigger: press
+    actionId: agent.review
+    adapterId: herdr
+    consumeOriginal: true
+    config: {}
+  - id: agent-accept
+    physicalCode: NumpadAdd
+    trigger: press
+    actionId: agent.accept
+    adapterId: herdr
+    consumeOriginal: true
+    config: {}
+  - id: open-terminal
+    physicalCode: Numpad4
+    trigger: press
+    actionId: terminal.open
+    adapterId: terminal
+    consumeOriginal: true
+    config: {}
+  - id: run-tests
+    physicalCode: Numpad6
+    trigger: press
+    actionId: test.run
+    adapterId: terminal
+    consumeOriginal: true
+    config: {}
+  - id: git-diff
+    physicalCode: Numpad1
+    trigger: press
+    actionId: git.diff
+    adapterId: git
+    consumeOriginal: true
+    config: {}
+  - id: git-commit
+    physicalCode: Numpad2
+    trigger: press
+    actionId: git.commit
+    adapterId: git
+    consumeOriginal: true
+    config: {}
+  - id: git-pr
+    physicalCode: Numpad3
+    trigger: press
+    actionId: git.pr
+    adapterId: git
+    consumeOriginal: true
+    config: {}
+  - id: agent-reject
+    physicalCode: NumpadDecimal
+    trigger: press
+    actionId: agent.reject
+    adapterId: herdr
+    consumeOriginal: true
+    config: {}

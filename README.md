@@ -15,8 +15,14 @@ shell, a Rust workspace, shared schema and profile packages, CI, and the typed
 boundaries between input, actions, adapters, and profiles. CORE-001 added the
 platform-neutral runtime: the press/hold/double-press state machines, layer
 and capture-mode behavior, `consumeOriginal` decisions, the adapter registry,
-cancellation, `ActionReceipt` events, and readable YAML import/export. Low-
-level keyboard capture is not implemented yet — that is INP-001.
+cancellation, `ActionReceipt` events, and readable YAML import/export. UX-001
+added the Milestone 0 interaction prototype: an eight-screen first-run wizard
+(welcome, control surface, permission, hardware capture, starting profile,
+connected tools, live board test, done) with a tactile numpad signature object,
+dark/light tokens, animated signal-trace route receipts, keyboard navigation
+and reduced-motion support. The prototype is fixture-driven and renders fully
+in the browser (`pnpm dev`); the Rust shell adds the typed IPC boundary.
+Low-level keyboard capture is not implemented yet — that is INP-001.
 
 ## Repository layout
 

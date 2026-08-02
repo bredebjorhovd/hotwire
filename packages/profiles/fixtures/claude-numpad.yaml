@@ -1,0 +1,28 @@
+schemaVersion: 1
+id: claude-numpad
+name: Claude Code
+controlSurface: numpad
+enabled: true
+bindings:
+  - id: claude-launch
+    physicalCode: Numpad5
+    trigger: press
+    actionId: claude.launch
+    adapterId: claude-code
+    consumeOriginal: true
+    config: {}
+  - id: claude-continue
+    physicalCode: NumpadEnter
+    trigger: press
+    actionId: agent.continue
+    adapterId: claude-code
+    consumeOriginal: true
+    config: {}
+  - id: claude-prompt
+    physicalCode: Numpad0
+    trigger: press
+    actionId: voice.input
+    adapterId: shortcut
+    consumeOriginal: true
+    config:
+      shortcut: "return"
