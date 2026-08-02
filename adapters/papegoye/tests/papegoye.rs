@@ -464,6 +464,102 @@ async fn overlapping_starts_after_a_failed_injection_post_a_real_hold() {
 }
 
 #[tokio::test]
+async fn release_waits_for_a_blocked_start_and_balances() {
+    // A release arriving while exec-1's start is parked mid-injection must not
+    // orphan the reservation: it waits behind the same operation lock, so the
+    // start completes first and the release then removes the active entry and
+    // balances the hold.
+    let (release_tx, release_rx) = oneshot::channel();
+    let platform = MockPlatform::new().with_hold_down(release_rx);
+    let events = platform.events.clone();
+    let adapter = Arc::new(PapegoyeAdapter::new(Arc::new(platform)));
+
+    let start = {
+        let adapter = Arc::clone(&adapter);
+        let invocation = invocation("exec-1", shortcut_config());
+        tokio::spawn(async move { adapter.execute(&invocation).await })
+    };
+    // Let exec-1 park inside its gated key-down, holding the operation lock.
+    tokio::task::yield_now().await;
+
+    let release = {
+        let adapter = Arc::clone(&adapter);
+        tokio::spawn(async move { adapter.release("exec-1").await })
+    };
+    tokio::task::yield_now().await;
+    assert!(
+        !release.is_finished(),
+        "release must wait for the blocked start to settle"
+    );
+
+    release_tx.send(()).ok();
+    let (start_result, release_result) = tokio::join!(start, release);
+    assert_eq!(
+        start_result.expect("start ran").status,
+        ActionStatus::Started
+    );
+    assert!(release_result.expect("release ran").is_ok());
+
+    let events = events.lock().expect("events lock");
+    assert_eq!(events.downs, vec![0x3F, 0x31], "hold posted");
+    assert_eq!(
+        events.ups,
+        vec![0x31, 0x3F],
+        "release posted after the start settled, key first"
+    );
+    assert_eq!(events.downs.len(), events.ups.len(), "no stuck keys");
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_a_blocked_start_and_balances() {
+    // Same invariant for shutdown: `release_all` must not drain the tracking
+    // state while a start is still injecting. It waits, then releases the
+    // completed hold, leaving nothing to release afterwards.
+    let (release_tx, release_rx) = oneshot::channel();
+    let platform = MockPlatform::new().with_hold_down(release_rx);
+    let events = platform.events.clone();
+    let adapter = Arc::new(PapegoyeAdapter::new(Arc::new(platform)));
+
+    let start = {
+        let adapter = Arc::clone(&adapter);
+        let invocation = invocation("exec-1", shortcut_config());
+        tokio::spawn(async move { adapter.execute(&invocation).await })
+    };
+    tokio::task::yield_now().await;
+
+    let shutdown = {
+        let adapter = Arc::clone(&adapter);
+        tokio::spawn(async move { adapter.release_all().await })
+    };
+    tokio::task::yield_now().await;
+    assert!(
+        !shutdown.is_finished(),
+        "shutdown must wait for the blocked start to settle"
+    );
+
+    release_tx.send(()).ok();
+    let (start_result, released) = tokio::join!(start, shutdown);
+    assert_eq!(
+        start_result.expect("start ran").status,
+        ActionStatus::Started
+    );
+    let mut released = released.expect("shutdown ran");
+    released.sort_unstable();
+    assert_eq!(released, vec![0x31, 0x3F], "shutdown released the hold");
+
+    {
+        let events = events.lock().expect("events lock");
+        assert_eq!(events.downs.len(), events.ups.len(), "no stuck keys");
+    }
+
+    // The tracking map is clear after shutdown: nothing is left to release.
+    assert!(matches!(
+        adapter.release("exec-1").await,
+        Err(AdapterError::UnknownExecution(_))
+    ));
+}
+
+#[tokio::test]
 async fn validate_requires_exactly_one_of_shortcut_or_keycode() {
     let (adapter, _) = adapter();
 

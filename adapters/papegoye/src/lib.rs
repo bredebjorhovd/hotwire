@@ -143,7 +143,15 @@ impl PapegoyeAdapter {
     /// Key-ups are posted in [`KeyCombo::release_order`] — primary key first,
     /// then modifiers in reverse — so the receiving application never observes
     /// the key-up outside the configured modifier chord.
+    ///
+    /// Acquires the same operation lock as [`PapegoyeAdapter::start_hold`] so a
+    /// release arriving while a start is mid-injection waits for it to settle
+    /// (or roll back) before removing the reservation. Without this, a release
+    /// could remove the active entry and post ups while the start is still
+    /// blocked, and the start would then resume, post downs, and return
+    /// `Started` with nothing left to release — a stuck key.
     async fn end_hold(&self, execution_id: &str) -> Result<(), AdapterError> {
+        let _inject = self.inject.lock().await;
         let combo = self
             .active
             .lock()
@@ -240,7 +248,11 @@ impl PapegoyeAdapter {
     }
 
     /// Sends a complete press (down then up) for a `press`-triggered binding.
+    ///
+    /// Serialized behind the same operation lock as holds, so a tap never
+    /// interleaves with a hold's injection on the same keycodes.
     async fn tap(&self, execution_id: &str, combo: &KeyCombo) -> ActionResult {
+        let _inject = self.inject.lock().await;
         let mut posted = Vec::new();
         for code in combo.all_keycodes() {
             match self.platform.key_down(code).await {
@@ -269,13 +281,16 @@ impl PapegoyeAdapter {
     /// Releases every key any execution is holding and forgets all executions.
     ///
     /// Called on shutdown so no logical key is left down after Hotwire quits
-    /// or crashes (fail-open invariant).
+    /// or crashes (fail-open invariant). Serialized behind the same operation
+    /// lock as starts, so a shutdown never drains reservations that a start is
+    /// still injecting.
     ///
     /// # Panics
     ///
     /// Panics if the internal lock is poisoned by a panic in another thread.
     #[must_use]
     pub async fn release_all(&self) -> Vec<u16> {
+        let _inject = self.inject.lock().await;
         self.active.lock().expect("active lock").clear();
         let held: Vec<u16> = self
             .held
