@@ -4,7 +4,9 @@ import {
   actionResultSchema,
   adapterManifestSchema,
   bindingSchema,
+  herdrConfigSchema,
   normalizePhysicalCode,
+  papegoyeConfigSchema,
   profileSchema,
 } from "./index";
 
@@ -183,5 +185,77 @@ describe("adapter execution boundary", () => {
     });
 
     expect(result.success).toBe(true);
+  });
+});
+
+describe("herdrConfigSchema", () => {
+  it("accepts each integration path", () => {
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://127.0.0.1:7398" }).success).toBe(true);
+    expect(herdrConfigSchema.safeParse({ deepLink: "herdr://actions/focus" }).success).toBe(true);
+    expect(herdrConfigSchema.safeParse({ bundleId: "dev.herdr.app" }).success).toBe(true);
+    expect(herdrConfigSchema.safeParse({ appPath: "/Applications/Herdr.app" }).success).toBe(true);
+    expect(herdrConfigSchema.safeParse({ shortcut: "F17" }).success).toBe(true);
+  });
+
+  it("requires at least one integration path", () => {
+    const result = herdrConfigSchema.safeParse({});
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(JSON.stringify(result.error.issues)).toContain("at least one integration path");
+    }
+  });
+
+  it("rejects non-loopback API URLs and scheme-less deep links", () => {
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "https://example.com" }).success).toBe(false);
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://example.com:7398" }).success).toBe(false);
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://192.168.1.10:7398" }).success).toBe(false);
+    expect(herdrConfigSchema.safeParse({ deepLink: "focus" }).success).toBe(false);
+  });
+
+  it("accepts loopback API URLs", () => {
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://localhost:7398" }).success).toBe(true);
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://127.0.0.2:7398" }).success).toBe(true);
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://[::1]:7398" }).success).toBe(true);
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://[::1]" }).success).toBe(true);
+  });
+
+  it("rejects malformed authorities in parity with Rust", () => {
+    for (const bad of [
+      "http://user:pass@127.0.0.1:7398", // user info
+      "http://[::1]evil.example", // junk after the closing bracket
+      "http://[::1]:notaport", // non-numeric port
+      "http://[::1]:0", // port 0 is invalid
+      "http://[::1", // unterminated IPv6 literal
+      "http://[]:7398", // empty IPv6 literal
+      "http://127.0.0.1:", // empty port
+      "http://:", // empty host and port
+    ]) {
+      expect(herdrConfigSchema.safeParse({ apiBaseUrl: bad }).success).toBe(false);
+    }
+  });
+});
+
+describe("papegoyeConfigSchema", () => {
+  it("accepts a shortcut or a keycode", () => {
+    expect(papegoyeConfigSchema.safeParse({ shortcut: "fn+space" }).success).toBe(true);
+    expect(papegoyeConfigSchema.safeParse({ keycode: 64 }).success).toBe(true);
+    expect(
+      papegoyeConfigSchema.safeParse({ keycode: 64, modifiers: ["fn"] }).success,
+    ).toBe(true);
+  });
+
+  it("requires exactly one of shortcut or keycode", () => {
+    expect(papegoyeConfigSchema.safeParse({}).success).toBe(false);
+    expect(
+      papegoyeConfigSchema.safeParse({ shortcut: "fn+space", keycode: 64 }).success,
+    ).toBe(false);
+  });
+
+  it("rejects unknown modifiers", () => {
+    const result = papegoyeConfigSchema.safeParse({
+      keycode: 64,
+      modifiers: ["mega"],
+    });
+    expect(result.success).toBe(false);
   });
 });

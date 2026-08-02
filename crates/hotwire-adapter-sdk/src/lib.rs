@@ -100,6 +100,70 @@ pub struct ValidationResult {
     pub errors: Vec<String>,
 }
 
+/// A parsed shortcut: modifier keycodes plus the primary keycode.
+///
+/// Adapters that emulate shortcuts (Papegøye push-to-talk, the Herdr fallback)
+/// resolve a human-readable config like `"fn+space"` into a [`KeyCombo`] so the
+/// platform layer can send and hold the exact physical keys.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyCombo {
+    /// Keycodes of any modifier keys that must be held (`"shift"`, `"fn"`, …).
+    pub modifiers: Vec<u16>,
+    /// Keycode of the primary key (`"space"`, `"F17"`, …).
+    pub key: u16,
+}
+
+impl KeyCombo {
+    /// Every keycode in the combo, modifiers first then the primary key.
+    #[must_use]
+    pub fn all_keycodes(&self) -> Vec<u16> {
+        let mut keys = self.modifiers.clone();
+        keys.push(self.key);
+        keys
+    }
+
+    /// The order keycodes must be released: primary key first, then modifiers
+    /// in reverse.
+    ///
+    /// Releasing the primary key before its modifiers is the inverse of the
+    /// press order, so the receiving application never observes the key-up
+    /// outside the configured modifier chord.
+    #[must_use]
+    pub fn release_order(&self) -> Vec<u16> {
+        let mut keys = vec![self.key];
+        keys.extend(self.modifiers.iter().rev());
+        keys
+    }
+}
+
+/// Parses a shortcut string like `"fn+space"` or `"F17"` into a [`KeyCombo`].
+///
+/// The shortcut is split on `'+'`; the final token is the primary key and every
+/// preceding token is a modifier. A bare token is treated as a primary key.
+/// Resolution is delegated to the platform so the mapping stays out of the
+/// platform-neutral SDK: unknown tokens return `None`.
+#[must_use]
+pub fn parse_shortcut(
+    shortcut: &str,
+    resolve_modifier: impl Fn(&str) -> Option<u16>,
+    resolve_key: impl Fn(&str) -> Option<u16>,
+) -> Option<KeyCombo> {
+    let tokens: Vec<&str> = shortcut.split('+').map(str::trim).collect();
+    if tokens.is_empty() || tokens.iter().any(|token| token.is_empty()) {
+        return None;
+    }
+    let (modifiers, key) = tokens.split_at(tokens.len() - 1);
+    let key = resolve_key(key[0])?;
+    let mut modifier_codes = Vec::with_capacity(modifiers.len());
+    for modifier in modifiers {
+        modifier_codes.push(resolve_modifier(modifier)?);
+    }
+    Some(KeyCombo {
+        modifiers: modifier_codes,
+        key,
+    })
+}
+
 /// Contract every Hotwire adapter implements.
 #[async_trait]
 pub trait Adapter: Send + Sync {
@@ -246,5 +310,35 @@ mod tests {
             adapter.cancel("nope").await,
             Err(AdapterError::UnknownExecution(_))
         ));
+    }
+
+    #[test]
+    fn parse_shortcut_splits_modifiers_and_key() {
+        let resolve = |name: &str| match name {
+            "fn" => Some(0x3F),
+            "shift" => Some(0x38),
+            "space" => Some(0x31),
+            "F17" => Some(0x40),
+            _ => None,
+        };
+        let modifier = |name: &str| resolve(name).filter(|code| matches!(*code, 0x3F | 0x38));
+        let key = |name: &str| resolve(name).filter(|code| !matches!(*code, 0x3F | 0x38));
+
+        let combo = parse_shortcut("fn+space", modifier, key).expect("fn+space parses");
+        assert_eq!(combo.modifiers, vec![0x3F]);
+        assert_eq!(combo.key, 0x31);
+        assert_eq!(combo.all_keycodes(), vec![0x3F, 0x31]);
+        assert_eq!(
+            combo.release_order(),
+            vec![0x31, 0x3F],
+            "primary key up first"
+        );
+
+        let bare = parse_shortcut("F17", modifier, key).expect("F17 parses");
+        assert!(bare.modifiers.is_empty());
+        assert_eq!(bare.key, 0x40);
+
+        assert!(parse_shortcut("fn+", modifier, key).is_none());
+        assert!(parse_shortcut("fn+notakey", modifier, key).is_none());
     }
 }

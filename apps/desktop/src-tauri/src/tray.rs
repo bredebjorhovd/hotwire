@@ -49,8 +49,13 @@ pub fn setup_tray(app: &AppHandle, pause: &MenuItem<tauri::Wry>) -> tauri::Resul
             }
             crate::state::MENU_PAUSE => {
                 let state = app.state::<crate::state::ShellState>();
-                let paused = crate::state::toggle_pause(&state.tap);
-                crate::state::sync_pause_label(&state.pause_item, paused);
+                // Pause/resume drives both recovery surfaces: capture on the
+                // tap and every active adapter hold (fail-open, spec §15.5).
+                if state.is_paused() {
+                    let _ = tauri::async_runtime::block_on(state.resume());
+                } else {
+                    let _ = tauri::async_runtime::block_on(state.pause());
+                }
             }
             MENU_QUIT => app.exit(0),
             _ => {}

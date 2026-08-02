@@ -9,6 +9,7 @@ import {
   emitMockActionReceipt,
   getAppStatus,
   isRunningInTauri,
+  runAdapterAction,
   type AppStatus,
 } from "../features/bridge/ipc";
 import { receiptRouteLabel } from "../features/bridge/receipts";
@@ -27,6 +28,7 @@ export function App() {
   const [activeProfileId, setActiveProfileId] = useState("ai-numpad");
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [sendingMock, setSendingMock] = useState(false);
+  const [runningSlice, setRunningSlice] = useState(false);
   const receipt = useActionReceipts();
 
   useEffect(() => {
@@ -47,6 +49,27 @@ export function App() {
     }
   };
 
+  /**
+   * Runs the live vertical slice: Numpad5 → OPEN_HERDR → herdr adapter
+   * (spec §24). The adapter negotiates Herdr's local integration and falls
+   * back to app launch/focus, then the configured shortcut; its receipt is
+   * broadcast to the live board and the footer LAST ACTION item.
+   */
+  const runSlice = async () => {
+    setRunningSlice(true);
+    try {
+      await runAdapterAction(
+        "herdr",
+        "app.open_or_focus",
+        "press",
+        { bundleId: "Herdr", shortcut: "F17" },
+        "Numpad5",
+      );
+    } finally {
+      setRunningSlice(false);
+    }
+  };
+
   const activeProfile = loadFixtureProfile(activeProfileId);
 
   return (
@@ -58,14 +81,24 @@ export function App() {
         </span>
         <span className="header-tools">
           {isRunningInTauri() && (
-            <Button
-              variant="ghost"
-              onClick={sendMockReceipt}
-              disabled={sendingMock}
-              aria-label="Emit a mocked action receipt from the Rust shell"
-            >
-              TEST RECEIPT
-            </Button>
+            <>
+              <Button
+                variant="ghost"
+                onClick={runSlice}
+                disabled={runningSlice}
+                aria-label="Run the Herdr vertical slice through the real adapter"
+              >
+                RUN SLICE
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={sendMockReceipt}
+                disabled={sendingMock}
+                aria-label="Emit a mocked action receipt from the Rust shell"
+              >
+                TEST RECEIPT
+              </Button>
+            </>
           )}
           <Button
             variant="ghost"

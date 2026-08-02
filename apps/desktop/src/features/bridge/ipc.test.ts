@@ -2,15 +2,20 @@ import { describe, expect, it } from "vitest";
 
 import {
   ACTION_RECEIPT_EVENT,
+  cancelAdapterAction,
+  detectAdapter,
   emitMockActionReceipt,
   getAppStatus,
   getDiagnostics,
   isRunningInTauri,
   pauseCapture,
   quitDesktop,
+  releaseAdapterAction,
   resumeCapture,
+  runAdapterAction,
   showMainWindow,
   subscribeActionReceipts,
+  validateAdapterConfig,
   validateProfileYaml,
   type ActionReceipt,
 } from "./ipc";
@@ -74,6 +79,20 @@ describe("ipc bridge outside Tauri", () => {
   it("degrades pause and resume to browser no-ops", async () => {
     await expect(pauseCapture()).resolves.toBe(false);
     await expect(resumeCapture()).resolves.toBe(false);
+  });
+
+  it("degrades adapter commands to no-ops without the shell", async () => {
+    await expect(
+      runAdapterAction("herdr", "app.open_or_focus", "press", {}, "Numpad5"),
+    ).resolves.toBeNull();
+    await expect(
+      releaseAdapterAction("papegoye", "exec-1", "Numpad0"),
+    ).resolves.toBeNull();
+    await expect(
+      cancelAdapterAction("papegoye", "exec-1", "Numpad0"),
+    ).resolves.toBeNull();
+    await expect(detectAdapter("herdr")).resolves.toBeNull();
+    await expect(validateAdapterConfig("herdr", {})).resolves.toBeNull();
   });
 
   it("subscribing outside Tauri returns a safe no-op unsubscriber", () => {

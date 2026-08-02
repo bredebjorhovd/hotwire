@@ -11,13 +11,12 @@
 // Tauri's macro-generated context is not written to satisfy clippy::pedantic.
 #![allow(clippy::pedantic)]
 
+mod adapters;
 mod commands;
 mod events;
 mod state;
 mod tray;
 mod window;
-
-use std::sync::Mutex;
 
 use hotwire_input_macos::QuartzEventTap;
 use tauri::Manager;
@@ -27,11 +26,11 @@ pub fn run() {
     let app = tauri::Builder::default()
         .setup(|app| {
             let pause_item = state::create_pause_item(app.handle())?;
-            app.manage(state::ShellState {
-                tap: QuartzEventTap::new(),
-                pause_item: pause_item.clone(),
-                last_receipt: Mutex::new(None),
-            });
+            app.manage(state::ShellState::new(
+                QuartzEventTap::new(),
+                pause_item.clone(),
+                adapters::AdapterState::new(),
+            ));
             tray::setup_tray(app.handle(), &pause_item)?;
             Ok(())
         })
@@ -46,15 +45,30 @@ pub fn run() {
             commands::mock_action_receipt,
             commands::diagnostics,
             commands::pause_capture,
-            commands::resume_capture
+            commands::resume_capture,
+            commands::run_adapter_action,
+            commands::release_adapter_action,
+            commands::cancel_adapter_action,
+            commands::detect_adapter,
+            commands::validate_adapter_config
         ])
         .build(tauri::generate_context!())
         .expect("error while building the Hotwire desktop shell");
 
     app.run(|app_handle, event| {
-        // Clicking the Dock icon on macOS re-opens the configuration window.
-        if let tauri::RunEvent::Reopen { .. } = event {
-            let _ = window::show_main_window(app_handle);
+        match event {
+            // Clicking the Dock icon on macOS re-opens the configuration window.
+            tauri::RunEvent::Reopen { .. } => {
+                let _ = window::show_main_window(app_handle);
+            }
+            // Clean shutdown (fail-open, spec §15.5): stop capture on the tap
+            // and cancel/release every active adapter hold so no key is left
+            // logically down when the process exits.
+            tauri::RunEvent::Exit => {
+                let state = app_handle.state::<state::ShellState>();
+                let _ = tauri::async_runtime::block_on(state.shutdown());
+            }
+            _ => {}
         }
     });
 }
