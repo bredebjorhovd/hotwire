@@ -92,6 +92,49 @@ bindings:
     expect(result.error).toContain("schemaVersion");
   });
 
+  it("defaults captureMode and layer when omitted", () => {
+    const result = parseProfileYaml(`
+schemaVersion: 1
+id: quick
+name: Quick
+controlSurface: numpad
+bindings:
+  - physicalCode: Numpad5
+    trigger: press
+    actionId: app.open_or_focus
+    adapterId: herdr
+`);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.profile.captureMode).toBe("capture");
+    expect(result.profile.bindings[0]?.layer).toBe(false);
+  });
+
+  it("accepts a layer key, capture mode, and layer binding", () => {
+    const result = parseProfileYaml(`
+schemaVersion: 1
+id: layered
+name: Layered
+controlSurface: numpad
+layerKey: NumLock
+captureMode: modified_capture
+bindings:
+  - physicalCode: Numpad7
+    trigger: press
+    actionId: app.alternate
+    adapterId: herdr
+    consumeOriginal: true
+    layer: true
+`);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.profile.layerKey).toBe("NumLock");
+    expect(result.profile.captureMode).toBe("modified_capture");
+    expect(result.profile.bindings[0]?.layer).toBe(true);
+  });
+
   it("rejects non-mapping documents", () => {
     expect(parseProfileYaml("- just\n- a\n- list").ok).toBe(false);
   });

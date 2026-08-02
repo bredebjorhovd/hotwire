@@ -1,0 +1,153 @@
+/**
+ * Hotwire design tokens — Milestone 0.
+ *
+ * Mirrors spec §7.4 (color), §7.5 (type scale), §7.6 (spacing/geometry) and
+ * §7.7 (motion). Dark is the default appearance; light overrides the same
+ * variable names so every component switches theme without new rules.
+ */
+:root {
+  /* Color — dark appearance (spec §7.4) */
+  --canvas: #11110f;
+  --surface-elevated: #181816;
+  --surface-recessed: #0c0c0b;
+  --panel-border: rgba(255, 255, 255, 0.08);
+  --text-primary: #f1efe8;
+  --text-secondary: #a7a399;
+  --text-muted: #6e6b64;
+  --key-top: #272724;
+  --key-side: #1c1c19;
+  --current: #f1b35b;
+  --current-soft: rgba(241, 179, 91, 0.16);
+  --success: #8fcb9b;
+  --warning: #e0b56a;
+  --failure: #d9796f;
+  --focus-ring: #d6a65e;
+
+  /* Light appearance (spec §7.4) — swap on [data-theme="light"] */
+  --canvas-l: #e9e6de;
+  --surface-elevated-l: #f5f2ea;
+  --surface-recessed-l: #dcd8ce;
+  --panel-border-l: rgba(45, 40, 31, 0.12);
+  --text-primary-l: #24231f;
+  --text-secondary-l: #68645c;
+  --text-muted-l: #928d82;
+  --key-top-l: #f8f5ed;
+  --key-side-l: #d6d0c4;
+  --current-l: #b76824;
+  --current-soft-l: rgba(183, 104, 36, 0.12);
+  --success-l: #477f58;
+  --warning-l: #9c6b28;
+  --failure-l: #a94c45;
+  --focus-ring-l: #a85d20;
+
+  /* Typography (spec §7.5) */
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    system-ui, sans-serif;
+  --font-mono: "Berkeley Mono", "IBM Plex Mono", "Geist Mono", ui-monospace,
+    SFMono-Regular, Menlo, monospace;
+
+  --type-display: 32px;
+  --type-display-lh: 38px;
+  --type-page-title: 22px;
+  --type-page-title-lh: 28px;
+  --type-section: 15px;
+  --type-section-lh: 20px;
+  --type-body: 13px;
+  --type-body-lh: 19px;
+  --type-control: 12px;
+  --type-control-lh: 16px;
+  --type-instrumentation: 11px;
+  --type-instrumentation-lh: 14px;
+  --type-micro: 10px;
+  --type-micro-lh: 12px;
+
+  /* Spacing (spec §7.6) — base unit 4px */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* Geometry (spec §7.6) */
+  --radius-panel: 16px;
+  --radius-card: 12px;
+  --radius-control: 8px;
+  --radius-keycap: 6px;
+  --radius-pill: 999px;
+
+  /* Motion (spec §7.7) */
+  --motion-signal: 500ms;
+  --motion-key-down: 70ms;
+  --motion-key-up: 110ms;
+  --motion-panel: 200ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* Derived surfaces */
+  --color-canvas: var(--canvas);
+  --color-elevated: var(--surface-elevated);
+  --color-recessed: var(--surface-recessed);
+  --color-border: var(--panel-border);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-key-top: var(--key-top);
+  --color-key-side: var(--key-side);
+  --color-current: var(--current);
+  --color-current-soft: var(--current-soft);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-failure: var(--failure);
+  --color-focus: var(--focus-ring);
+
+  --color-key-border: color-mix(in srgb, var(--color-text-primary) 14%, transparent);
+
+  --shadow-panel: 0 30px 80px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --shadow-key: 0 5px 0 var(--color-key-side), 0 8px 16px rgba(0, 0, 0, 0.45);
+  --shadow-key-hover: 0 7px 0 var(--color-key-side), 0 12px 24px rgba(0, 0, 0, 0.5);
+  --shadow-key-pressed: 0 2px 0 var(--color-key-side), 0 3px 6px rgba(0, 0, 0, 0.4);
+  --shadow-recessed: inset 0 2px 8px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+/* Light appearance — override the derived variables in place. */
+:root[data-theme="light"] {
+  --color-canvas: var(--canvas-l);
+  --color-elevated: var(--surface-elevated-l);
+  --color-recessed: var(--surface-recessed-l);
+  --color-border: var(--panel-border-l);
+  --color-text-primary: var(--text-primary-l);
+  --color-text-secondary: var(--text-secondary-l);
+  --color-text-muted: var(--text-muted-l);
+  --color-key-top: var(--key-top-l);
+  --color-key-side: var(--key-side-l);
+  --color-current: var(--current-l);
+  --color-current-soft: var(--current-soft-l);
+  --color-success: var(--success-l);
+  --color-warning: var(--warning-l);
+  --color-failure: var(--failure-l);
+  --color-focus: var(--focus-ring-l);
+
+  --shadow-panel: 0 30px 80px rgba(60, 50, 30, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  --shadow-key: 0 5px 0 var(--color-key-side), 0 8px 16px rgba(60, 50, 30, 0.18);
+  --shadow-key-hover: 0 7px 0 var(--color-key-side), 0 12px 24px rgba(60, 50, 30, 0.2);
+  --shadow-key-pressed: 0 2px 0 var(--color-key-side), 0 3px 6px rgba(60, 50, 30, 0.15);
+  --shadow-recessed: inset 0 2px 8px rgba(60, 50, 30, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+/* Reduced motion (spec §7.7): collapse durations so route motion becomes
+   instant state changes with a short opacity fade. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-signal: 120ms;
+    --motion-key-down: 0ms;
+    --motion-key-up: 0ms;
+    --motion-panel: 100ms;
+  }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

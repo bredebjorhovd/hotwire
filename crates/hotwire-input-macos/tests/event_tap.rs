@@ -65,12 +65,12 @@ fn drain_for(rx: &Receiver<TapDecision>, window: Duration) -> Vec<TapDecision> {
 fn decisions_for<'a>(
     decisions: &'a [TapDecision],
     physical_code: &str,
-    state: &KeyState,
+    state: KeyState,
 ) -> Vec<&'a TapDecision> {
     decisions
         .iter()
         .filter(|decision| {
-            decision.event.physical_code == physical_code && decision.event.state == *state
+            decision.event.physical_code == physical_code && decision.event.state == state
         })
         .collect()
 }
@@ -111,8 +111,8 @@ fn event_tap_captures_bound_keys_and_passes_everything_else_through() {
 
     // Selected key (Numpad5) is consumed while capture is active.
     let decisions = press(KeyCode::ANSI_KEYPAD_5, &decision_rx);
-    let down = decisions_for(&decisions, "Numpad5", &KeyState::Down);
-    let up = decisions_for(&decisions, "Numpad5", &KeyState::Up);
+    let down = decisions_for(&decisions, "Numpad5", KeyState::Down);
+    let up = decisions_for(&decisions, "Numpad5", KeyState::Up);
     assert_eq!(down.len(), 1, "one Numpad5 down decision expected");
     assert_eq!(up.len(), 1, "one Numpad5 up decision expected");
     assert!(down[0].suppressed, "bound key down must be consumed");
@@ -120,31 +120,31 @@ fn event_tap_captures_bound_keys_and_passes_everything_else_through() {
 
     // Unmatched key passes through.
     let decisions = press(KeyCode::ANSI_A, &decision_rx);
-    let down = decisions_for(&decisions, "A", &KeyState::Down);
+    let down = decisions_for(&decisions, "A", KeyState::Down);
     assert_eq!(down.len(), 1, "one A down decision expected");
     assert!(!down[0].suppressed, "unbound key must pass through");
 
     // Emergency bypass pauses capture; everything then passes through.
     post_key(KeyCode::ESCAPE, true, ctrl_opt_cmd());
     let decisions = drain_for(&decision_rx, Duration::from_millis(400));
-    let escape = decisions_for(&decisions, "Escape", &KeyState::Down);
+    let escape = decisions_for(&decisions, "Escape", KeyState::Down);
     assert_eq!(escape.len(), 1, "one Escape decision expected");
     assert!(escape[0].paused, "bypass chord must pause capture");
 
     let decisions = press(KeyCode::ANSI_KEYPAD_5, &decision_rx);
-    let down = decisions_for(&decisions, "Numpad5", &KeyState::Down);
+    let down = decisions_for(&decisions, "Numpad5", KeyState::Down);
     assert_eq!(down.len(), 1);
     assert!(!down[0].suppressed, "capture must be paused (fail-open)");
 
     // The same chord resumes capture.
     post_key(KeyCode::ESCAPE, true, ctrl_opt_cmd());
     let decisions = drain_for(&decision_rx, Duration::from_millis(400));
-    let escape = decisions_for(&decisions, "Escape", &KeyState::Down);
+    let escape = decisions_for(&decisions, "Escape", KeyState::Down);
     assert_eq!(escape.len(), 1);
     assert!(!escape[0].paused, "second bypass press must resume capture");
 
     let decisions = press(KeyCode::ANSI_KEYPAD_5, &decision_rx);
-    let down = decisions_for(&decisions, "Numpad5", &KeyState::Down);
+    let down = decisions_for(&decisions, "Numpad5", KeyState::Down);
     assert_eq!(down.len(), 1);
     assert!(down[0].suppressed, "capture must resume after the bypass");
 

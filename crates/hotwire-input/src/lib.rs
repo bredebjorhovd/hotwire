@@ -135,6 +135,17 @@ impl TriggerDetector {
         Vec::new()
     }
 
+    /// Returns whether the detector currently expects more input.
+    ///
+    /// For a `double_press` trigger this is the *armed* state: a first press
+    /// happened (held, or released and waiting for a second press). The
+    /// binding router uses it to keep consumption armed while a double press
+    /// is in flight, so the first press never leaks to the OS.
+    #[must_use]
+    pub fn is_armed(&self) -> bool {
+        self.phase != DetectorPhase::Idle
+    }
+
     fn on_down(&mut self, at_ns: u64) -> Vec<TriggerEvent> {
         match (self.trigger, self.phase) {
             (Trigger::Press | Trigger::Hold, DetectorPhase::Idle) => {
@@ -275,6 +286,26 @@ mod tests {
         assert!(detector
             .on_event(&event(1_000_000, KeyState::Down))
             .is_empty());
+    }
+
+    #[test]
+    fn double_press_arms_from_the_first_press_and_disarms_on_completion() {
+        let mut detector = TriggerDetector::new(Trigger::DoublePress, DOUBLE_PRESS_WINDOW_NS);
+
+        assert!(!detector.is_armed());
+        let _ = detector.on_event(&event(0, KeyState::Down));
+        assert!(detector.is_armed());
+        let _ = detector.on_event(&event(50, KeyState::Up));
+        assert!(detector.is_armed(), "waiting for the second press");
+        let _ = detector.on_event(&event(150, KeyState::Down));
+        assert!(detector.is_armed());
+        let _ = detector.on_event(&event(200, KeyState::Up));
+        assert!(!detector.is_armed(), "a completed double press disarms");
+
+        let _ = detector.on_event(&event(0, KeyState::Down));
+        let _ = detector.on_event(&event(50, KeyState::Up));
+        let _ = detector.on_tick(DOUBLE_PRESS_WINDOW_NS + 1);
+        assert!(!detector.is_armed(), "expired waits disarm");
     }
 
     #[test]

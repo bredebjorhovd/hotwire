@@ -1,0 +1,231 @@
+/**
+ * The live board — Hotwire's signature object (spec §7.2).
+ *
+ * A recessed tray holds a rendered numpad. Each keycap has a visible top
+ * surface, a darker front plane, a 1px inner highlight, soft contact shadow,
+ * subtle material grain and physically plausible travel on press.
+ */
+
+/* ---- Tray ---- */
+.board-tray {
+  background: var(--color-recessed);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-recessed);
+  padding: clamp(var(--space-3), 2vw, var(--space-5));
+  width: fit-content;
+  max-width: 100%;
+}
+
+/* ---- Numpad grid (spec §5 geometry) ---- */
+.numpad {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(64px, 1fr));
+  grid-auto-rows: minmax(52px, 1fr);
+  gap: var(--space-2);
+}
+
+.numpad--compact {
+  grid-template-columns: repeat(4, 26px);
+  grid-auto-rows: 26px;
+  gap: 4px;
+}
+
+/* Enter key spans two rows; the wide zero spans two columns. */
+.keycap[data-position="row3"] {
+  grid-row: span 2;
+}
+
+.keycap[data-span="2"] {
+  grid-column: span 2;
+}
+
+/* ---- Keycap ---- */
+.keycap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  aspect-ratio: 1.1;
+  border: 1px solid var(--color-key-border);
+  border-radius: var(--radius-keycap);
+  color: var(--color-text-secondary);
+  text-align: left;
+  cursor: pointer;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 38%),
+    var(--color-key-top);
+  box-shadow:
+    var(--shadow-key),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  transition:
+    transform var(--motion-key-down) var(--ease-out),
+    box-shadow var(--motion-key-down) var(--ease-out),
+    background-color var(--motion-key-down) var(--ease-out),
+    border-color var(--motion-key-down) var(--ease-out),
+    color var(--motion-key-down) var(--ease-out);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Material grain — fine noise woven into the top surface. */
+.keycap::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+.keycap .key-label {
+  font: 700 var(--type-instrumentation) / 1 var(--font-mono);
+  letter-spacing: 0.09em;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.keycap .key-sublabel {
+  font: 600 var(--type-micro) / 1 var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+}
+
+.keycap:hover {
+  border-color: var(--color-current);
+  transform: translateY(-2px);
+  box-shadow:
+    var(--shadow-key-hover),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.keycap[data-state="pressed"],
+.keycap[data-state="triggered"] {
+  transform: translateY(3px);
+  box-shadow:
+    var(--shadow-key-pressed),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+/* Unassigned: quiet, low contrast. */
+.keycap[data-state="unassigned"] {
+  color: var(--color-text-muted);
+  border-color: color-mix(in srgb, var(--color-text-primary) 7%, transparent);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0) 38%),
+    var(--color-key-top);
+}
+
+.keycap[data-state="unassigned"] .key-label,
+.keycap[data-state="unassigned"] .key-sublabel {
+  color: var(--color-text-muted);
+}
+
+/* Triggered successfully: short warm current around the edge (spec §7.2). */
+.keycap[data-state="triggered"] {
+  border-color: var(--color-current);
+  animation: keycap-current 700ms var(--ease-out);
+}
+
+@keyframes keycap-current {
+  0% {
+    box-shadow: var(--shadow-key-pressed), 0 0 0 3px var(--color-current),
+      inset 0 0 12px var(--color-current-soft);
+  }
+  100% {
+    box-shadow: var(--shadow-key-pressed), 0 0 0 3px transparent,
+      inset 0 0 12px transparent;
+  }
+}
+
+/* Failed: one restrained red edge pulse. */
+.keycap[data-state="failed"] {
+  border-color: var(--color-failure);
+  animation: keycap-failed 700ms var(--ease-out);
+}
+
+@keyframes keycap-failed {
+  0% {
+    box-shadow: var(--shadow-key-pressed), 0 0 0 3px var(--color-failure);
+  }
+  100% {
+    box-shadow: var(--shadow-key-pressed), 0 0 0 3px transparent;
+  }
+}
+
+/* Listening: slow breathing outline (capture prompt). */
+.keycap[data-state="listening"] {
+  border-color: var(--color-current);
+  animation: keycap-listening 1.6s ease-in-out infinite;
+}
+
+@keyframes keycap-listening {
+  0%, 100% {
+    box-shadow: 0 0 0 0 var(--color-current-soft), var(--shadow-key);
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--color-current-soft), var(--shadow-key);
+  }
+}
+
+.keycap[data-state="settled"] {
+  border-color: var(--color-current);
+  box-shadow:
+    var(--shadow-key),
+    inset 0 0 10px var(--color-current-soft);
+}
+
+/* ---- Miniature numpad (profile cards) ---- */
+.mini-key {
+  aspect-ratio: 1;
+  border-radius: 4px;
+  border: 1px solid var(--color-key-border);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 38%),
+    var(--color-key-top);
+  box-shadow: 0 2px 0 var(--color-key-side);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 600 7px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.mini-key[data-bound="true"] {
+  color: var(--color-current);
+  border-color: var(--color-current);
+}
+
+.mini-key[data-key="Enter"] {
+  grid-row: span 2;
+}
+
+.mini-key[data-key="Numpad0"] {
+  grid-column: span 2;
+}
+
+.card .numpad--compact {
+  margin-inline: auto;
+}
+
+/* ---- Live test board (screen 7) ---- */
+.board-stage {
+  display: grid;
+  gap: var(--space-5);
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+@media (min-width: 900px) {
+  .board-stage--split {
+    grid-template-columns: minmax(320px, 480px) 1fr;
+  }
+}

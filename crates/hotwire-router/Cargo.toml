@@ -1,0 +1,23 @@
+[package]
+name = "hotwire-router"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Platform-neutral binding routing, adapter registry, and execution runtime"
+
+[dependencies]
+hotwire-adapter-sdk = { path = "../hotwire-adapter-sdk" }
+hotwire-core = { path = "../hotwire-core" }
+hotwire-input = { path = "../hotwire-input" }
+hotwire-profile = { path = "../hotwire-profile" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+
+[dev-dependencies]
+async-trait.workspace = true
+
+[lints]
+workspace = true

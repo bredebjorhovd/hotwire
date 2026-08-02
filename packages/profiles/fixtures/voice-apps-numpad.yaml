@@ -1,0 +1,28 @@
+schemaVersion: 1
+id: voice-apps-numpad
+name: Voice + Apps
+controlSurface: numpad
+enabled: true
+bindings:
+  - id: voice-hold
+    physicalCode: Numpad0
+    trigger: hold
+    actionId: voice.input
+    adapterId: papegoye
+    consumeOriginal: true
+    config:
+      shortcut: "fn+space"
+  - id: focus-terminal
+    physicalCode: NumpadEnter
+    trigger: press
+    actionId: app.open_or_focus
+    adapterId: app
+    consumeOriginal: true
+    config: {}
+  - id: focus-browser
+    physicalCode: Numpad5
+    trigger: press
+    actionId: app.open_or_focus
+    adapterId: app
+    consumeOriginal: true
+    config: {}
