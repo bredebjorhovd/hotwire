@@ -113,6 +113,78 @@ export const adapterManifestSchema = z.object({
 
 export type AdapterManifest = z.infer<typeof adapterManifestSchema>;
 
+/**
+ * Config schema for the Herdr adapter (spec §13.6).
+ *
+ * Herdr negotiates capabilities and falls back through local API / deep link,
+ * then app launch/focus, then a configured shortcut. At least one integration
+ * path is required.
+ */
+export const herdrConfigSchema = z
+  .object({
+    /** Loopback Herdr API base URL, e.g. `http://127.0.0.1:7398`. */
+    apiBaseUrl: z.string().startsWith("http://").optional(),
+    /** A `herdr://…` deep link opened with the system handler. */
+    deepLink: z
+      .string()
+      .regex(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, "must include a scheme, e.g. herdr://")
+      .optional(),
+    /** macOS bundle id used to launch or focus Herdr. */
+    bundleId: z.string().min(1).optional(),
+    /** Path to the Herdr app bundle. */
+    appPath: z.string().min(1).optional(),
+    /** Fallback shortcut reproduced when no local integration is available. */
+    shortcut: z.string().min(1).optional(),
+  })
+  .refine(
+    (config) =>
+      Boolean(
+        config.apiBaseUrl ||
+          config.deepLink ||
+          config.bundleId ||
+          config.appPath ||
+          config.shortcut,
+      ),
+    {
+      message:
+        "at least one integration path is required: apiBaseUrl, deepLink, bundleId, appPath, or shortcut",
+    },
+  );
+
+export type HerdrConfig = z.infer<typeof herdrConfigSchema>;
+
+/** Modifier names the Papegøye adapter accepts beside `keycode`. */
+export const papegoyeModifierSchema = z.enum([
+  "shift",
+  "control",
+  "option",
+  "command",
+  "fn",
+]);
+
+/**
+ * Config schema for the Papegøye adapter (spec §13.5).
+ *
+ * Push-to-talk is reproduced as a true hold: physical down sends the shortcut
+ * down once and physical up sends it up once. Exactly one of `shortcut` or
+ * `keycode` is required. No microphone data is part of this config — Papegøye
+ * owns all audio.
+ */
+export const papegoyeConfigSchema = z
+  .object({
+    /** Papegøye's configured push-to-talk shortcut, e.g. `fn+space` or `F17`. */
+    shortcut: z.string().min(1).optional(),
+    /** Explicit platform keycode, alternative to `shortcut`. */
+    keycode: z.number().int().positive().optional(),
+    /** Modifier names applied with `keycode`. */
+    modifiers: z.array(papegoyeModifierSchema).default([]),
+  })
+  .refine((config) => Boolean(config.shortcut) !== Boolean(config.keycode), {
+    message: "exactly one of `shortcut` or `keycode` is required",
+  });
+
+export type PapegoyeConfig = z.infer<typeof papegoyeConfigSchema>;
+
 /** The foreground application, when the OS can identify one. */
 export const activeApplicationSchema = z.object({
   bundleId: z.string().optional(),

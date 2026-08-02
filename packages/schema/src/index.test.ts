@@ -4,7 +4,9 @@ import {
   actionResultSchema,
   adapterManifestSchema,
   bindingSchema,
+  herdrConfigSchema,
   normalizePhysicalCode,
+  papegoyeConfigSchema,
   profileSchema,
 } from "./index";
 
@@ -183,5 +185,53 @@ describe("adapter execution boundary", () => {
     });
 
     expect(result.success).toBe(true);
+  });
+});
+
+describe("herdrConfigSchema", () => {
+  it("accepts each integration path", () => {
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "http://127.0.0.1:7398" }).success).toBe(true);
+    expect(herdrConfigSchema.safeParse({ deepLink: "herdr://actions/focus" }).success).toBe(true);
+    expect(herdrConfigSchema.safeParse({ bundleId: "dev.herdr.app" }).success).toBe(true);
+    expect(herdrConfigSchema.safeParse({ appPath: "/Applications/Herdr.app" }).success).toBe(true);
+    expect(herdrConfigSchema.safeParse({ shortcut: "F17" }).success).toBe(true);
+  });
+
+  it("requires at least one integration path", () => {
+    const result = herdrConfigSchema.safeParse({});
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(JSON.stringify(result.error.issues)).toContain("at least one integration path");
+    }
+  });
+
+  it("rejects non-loopback API URLs and scheme-less deep links", () => {
+    expect(herdrConfigSchema.safeParse({ apiBaseUrl: "https://example.com" }).success).toBe(false);
+    expect(herdrConfigSchema.safeParse({ deepLink: "focus" }).success).toBe(false);
+  });
+});
+
+describe("papegoyeConfigSchema", () => {
+  it("accepts a shortcut or a keycode", () => {
+    expect(papegoyeConfigSchema.safeParse({ shortcut: "fn+space" }).success).toBe(true);
+    expect(papegoyeConfigSchema.safeParse({ keycode: 64 }).success).toBe(true);
+    expect(
+      papegoyeConfigSchema.safeParse({ keycode: 64, modifiers: ["fn"] }).success,
+    ).toBe(true);
+  });
+
+  it("requires exactly one of shortcut or keycode", () => {
+    expect(papegoyeConfigSchema.safeParse({}).success).toBe(false);
+    expect(
+      papegoyeConfigSchema.safeParse({ shortcut: "fn+space", keycode: 64 }).success,
+    ).toBe(false);
+  });
+
+  it("rejects unknown modifiers", () => {
+    const result = papegoyeConfigSchema.safeParse({
+      keycode: 64,
+      modifiers: ["mega"],
+    });
+    expect(result.success).toBe(false);
   });
 });

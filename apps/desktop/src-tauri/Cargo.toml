@@ -13,13 +13,19 @@ name = "hotwire_desktop_lib"
 tauri-build.workspace = true
 
 [dependencies]
+hotwire-adapter-herdr = { path = "../../../adapters/herdr" }
+hotwire-adapter-papegoye = { path = "../../../adapters/papegoye" }
 hotwire-adapter-sdk = { path = "../../../crates/hotwire-adapter-sdk" }
 hotwire-core = { path = "../../../crates/hotwire-core" }
 hotwire-input-macos = { path = "../../../crates/hotwire-input-macos" }
 hotwire-profile = { path = "../../../crates/hotwire-profile" }
+hotwire-router = { path = "../../../crates/hotwire-router" }
 serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
 
 [lints]
 workspace = true

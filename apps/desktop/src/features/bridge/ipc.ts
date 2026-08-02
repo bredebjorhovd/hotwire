@@ -232,3 +232,102 @@ export function subscribeActionReceipts(
     unlisten?.();
   };
 }
+
+/** Rust `DetectionResult` (see `crates/hotwire-adapter-sdk`). */
+export interface DetectionResult {
+  id: string;
+  detected: boolean;
+  version?: string | null;
+  path?: string | null;
+}
+
+/** Rust `ValidationResult` (see `crates/hotwire-adapter-sdk`). */
+export interface ValidationResult {
+  valid: boolean;
+  errors: string[];
+}
+
+/**
+ * Runs one action through a registered adapter and returns its receipt.
+ *
+ * Mirrors the `run_adapter_action` command (ADP-001 vertical slice). A `hold`
+ * execution that reports `started` stays tracked so the caller can end it with
+ * `releaseAdapterAction` or `cancelAdapterAction`. Browser no-op returning
+ * `null`.
+ */
+export async function runAdapterAction(
+  adapterId: string,
+  actionId: string,
+  trigger: "press" | "hold" | "double_press",
+  config: Record<string, unknown>,
+  physicalCode: string,
+): Promise<ActionReceipt | null> {
+  if (!isRunningInTauri()) return null;
+  return invoke<ActionReceipt>("run_adapter_action", {
+    adapterId,
+    actionId,
+    trigger,
+    config,
+    physicalCode,
+  });
+}
+
+/**
+ * Ends a tracked hold execution (e.g. releasing a Papegøye push-to-talk key).
+ *
+ * Mirrors the `release_adapter_action` command. Browser no-op returning `null`.
+ */
+export async function releaseAdapterAction(
+  adapterId: string,
+  executionId: string,
+  physicalCode: string,
+): Promise<ActionReceipt | null> {
+  if (!isRunningInTauri()) return null;
+  return invoke<ActionReceipt>("release_adapter_action", {
+    adapterId,
+    executionId,
+    physicalCode,
+  });
+}
+
+/**
+ * Cancels a tracked execution. Mirrors the `cancel_adapter_action` command.
+ * Browser no-op returning `null`.
+ */
+export async function cancelAdapterAction(
+  adapterId: string,
+  executionId: string,
+  physicalCode: string,
+): Promise<ActionReceipt | null> {
+  if (!isRunningInTauri()) return null;
+  return invoke<ActionReceipt>("cancel_adapter_action", {
+    adapterId,
+    executionId,
+    physicalCode,
+  });
+}
+
+/**
+ * Probes a registered adapter for machine-level presence.
+ *
+ * Mirrors the `detect_adapter` command. Browser no-op returning `null`.
+ */
+export async function detectAdapter(
+  adapterId: string,
+): Promise<DetectionResult | null> {
+  if (!isRunningInTauri()) return null;
+  return invoke<DetectionResult>("detect_adapter", { adapterId });
+}
+
+/**
+ * Validates a binding config against a registered adapter.
+ *
+ * Mirrors the `validate_adapter_config` command. Browser no-op returning `null`.
+ */
+export async function validateAdapterConfig(
+  adapterId: string,
+  config: Record<string, unknown>,
+): Promise<ValidationResult | null> {
+  if (!isRunningInTauri()) return null;
+  return invoke<ValidationResult>("validate_adapter_config", { adapterId, config });
+}
