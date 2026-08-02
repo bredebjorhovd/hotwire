@@ -464,17 +464,34 @@ mod tests {
         background("/bin/sh", &["-c", "printf ok"]).with_imported(true)
     }
 
+    /// Runs `spec`, approving it first when the runner demands review.
+    ///
+    /// Execution-mechanics tests use `sh -c` spawns, which are now
+    /// fail-closed confirmation-risk; this helper approves the exact resolved
+    /// plan once and re-runs.
+    async fn run_approved(
+        runner: &CommandRunner,
+        spec: &CommandSpec,
+        token: &CancellationToken,
+    ) -> CommandOutput {
+        let attempt = runner.run(spec, token, None).await;
+        let RunStatus::ApprovalRequired(review_id) = attempt.status else {
+            return attempt;
+        };
+        runner.approve(review_id.as_str()).expect("test approval");
+        runner.run(spec, token, None).await
+    }
+
     #[tokio::test]
     async fn successful_commands_report_their_exit_code_and_output() {
         let runner = CommandRunner::new();
         let token = CancellationToken::new();
-        let output = runner
-            .run(
-                &background("/bin/sh", &["-c", "printf hello; printf world >&2"]),
-                &token,
-                None,
-            )
-            .await;
+        let output = run_approved(
+            &runner,
+            &background("/bin/sh", &["-c", "printf hello; printf world >&2"]),
+            &token,
+        )
+        .await;
 
         assert_eq!(output.status, RunStatus::Succeeded { exit_code: 0 });
         assert_eq!(output.stdout, "hello");
@@ -485,9 +502,7 @@ mod tests {
     async fn failing_commands_report_a_nonzero_exit_code() {
         let runner = CommandRunner::new();
         let token = CancellationToken::new();
-        let output = runner
-            .run(&background("/bin/sh", &["-c", "exit 3"]), &token, None)
-            .await;
+        let output = run_approved(&runner, &background("/bin/sh", &["-c", "exit 3"]), &token).await;
 
         assert_eq!(output.status, RunStatus::Failed { exit_code: 3 });
     }
@@ -496,8 +511,7 @@ mod tests {
     async fn timeout_kills_a_runaway_command() {
         let runner = CommandRunner::new();
         let token = CancellationToken::new();
-        let spec =
-            background("/bin/sh", &["-c", "sleep 30"]).with_timeout(Duration::from_millis(150));
+        let spec = background("/bin/sleep", &["30"]).with_timeout(Duration::from_millis(150));
 
         let start = std::time::Instant::now();
         let output = runner.run(&spec, &token, None).await;
@@ -513,7 +527,7 @@ mod tests {
     async fn cancellation_kills_a_running_command() {
         let runner = CommandRunner::new();
         let token = CancellationToken::new();
-        let spec = background("/bin/sh", &["-c", "sleep 30"]);
+        let spec = background("/bin/sleep", &["30"]);
 
         let task = tokio::spawn({
             let runner = runner.clone();
@@ -663,7 +677,7 @@ mod tests {
             let runner = runner.clone();
             let token = token.clone();
             let spec = spec.clone();
-            async move { runner.run(&spec, &token, None).await }
+            async move { run_approved(&runner, &spec, &token).await }
         });
         tokio::time::sleep(Duration::from_millis(100)).await;
         token.cancel();
@@ -687,8 +701,7 @@ mod tests {
         // Writes ~1 MiB of output — well over the 64 KiB cap. With the old
         // behavior the child would hit EPIPE when we stopped reading and be
         // reported failed; now we drain fully and the child still succeeds.
-        let spec = background("/bin/sh", &["-c", "head -c 1048576 /dev/zero"])
-            .with_env(crate::SanitizedEnv::new().inherit("PATH"));
+        let spec = background("/usr/bin/head", &["-c", "1048576", "/dev/zero"]);
 
         let output = runner.run(&spec, &token, None).await;
         assert_eq!(output.status, RunStatus::Succeeded { exit_code: 0 });
@@ -716,17 +729,14 @@ mod tests {
     async fn the_sanitized_environment_is_applied_to_the_child() {
         let runner = CommandRunner::new();
         let token = CancellationToken::new();
-        let spec = background(
-            "/bin/sh",
-            &["-c", "printf %s \"$HOTWIRE_MODE\" \"$UNINHERITED\""],
-        )
-        .with_cwd(crate::CwdStrategy::Home)
-        .with_env(crate::SanitizedEnv::new().with_var("HOTWIRE_MODE", "safe"))
-        .with_open_terminal(false);
+        let spec = background("/usr/bin/printenv", &["HOTWIRE_MODE"])
+            .with_cwd(crate::CwdStrategy::Home)
+            .with_env(crate::SanitizedEnv::new().with_var("HOTWIRE_MODE", "safe"))
+            .with_open_terminal(false);
 
         let output = runner.run(&spec, &token, None).await;
         assert_eq!(output.status, RunStatus::Succeeded { exit_code: 0 });
-        assert_eq!(output.stdout, "safe");
+        assert_eq!(output.stdout, "safe\n");
     }
 
     #[tokio::test]

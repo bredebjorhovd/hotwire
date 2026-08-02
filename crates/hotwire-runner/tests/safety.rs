@@ -69,15 +69,14 @@ async fn timeout_kills_runaway_commands_and_cancellation_stops_them() {
     let runner = CommandRunner::new();
 
     let timeout_token = CancellationToken::new();
-    let timeout_spec =
-        background("/bin/sh", &["-c", "sleep 30"]).with_timeout(Duration::from_millis(150));
+    let timeout_spec = background("/bin/sleep", &["30"]).with_timeout(Duration::from_millis(150));
     let start = std::time::Instant::now();
     let output = runner.run(&timeout_spec, &timeout_token, None).await;
     assert_eq!(output.status, RunStatus::TimedOut);
     assert!(start.elapsed() < Duration::from_secs(5));
 
     let cancel_token = CancellationToken::new();
-    let cancel_spec = background("/bin/sh", &["-c", "sleep 30"]);
+    let cancel_spec = background("/bin/sleep", &["30"]);
     let task = tokio::spawn({
         let runner = runner.clone();
         let cancel_token = cancel_token.clone();
@@ -101,17 +100,14 @@ async fn environment_values_are_sanitized_and_secrets_redacted() {
         .with_var("API_TOKEN", "super-secret-value");
     env.mark_secret("API_TOKEN");
 
-    let probe = CommandSpec::new(vec![
-        "/bin/sh".into(),
-        "-c".into(),
-        "printf '%s' \"$HOTWIRE_MODE\" \"$API_TOKEN\" \"$UNINHERITED\"".into(),
-    ])
-    .with_cwd(CwdStrategy::Home)
-    .with_env(env.clone())
-    .with_open_terminal(false);
+    let probe = CommandSpec::new(vec!["/usr/bin/printenv".into(), "API_TOKEN".into()])
+        .with_cwd(CwdStrategy::Home)
+        .with_env(env.clone())
+        .with_open_terminal(false);
 
     let output = runner.run(&probe, &token, None).await;
-    assert_eq!(output.stdout, "safesuper-secret-value");
+    assert_eq!(output.status, RunStatus::Succeeded { exit_code: 0 });
+    assert_eq!(output.stdout.trim_end(), "super-secret-value");
 
     // A redactor seeded from the resolved environment masks the secret value
     // even when the child repeats it bare into its output.
@@ -119,6 +115,14 @@ async fn environment_values_are_sanitized_and_secrets_redacted() {
     let masked = redactor.redact(&output.stdout);
     assert!(!masked.contains("super-secret-value"));
     assert!(masked.contains("[REDACTED]"));
+
+    // A non-secret explicit variable also reaches the child.
+    let mode = CommandSpec::new(vec!["/usr/bin/printenv".into(), "HOTWIRE_MODE".into()])
+        .with_cwd(CwdStrategy::Home)
+        .with_env(env)
+        .with_open_terminal(false);
+    let mode_output = runner.run(&mode, &token, None).await;
+    assert_eq!(mode_output.stdout.trim_end(), "safe");
 
     // The persistent log carries only structured details — no free text.
     let mut log = SafetyLog::memory();

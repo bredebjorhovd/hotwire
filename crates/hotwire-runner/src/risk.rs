@@ -2,11 +2,13 @@
 //!
 //! Every command is classified so the review boundary knows when an exact
 //! command must be shown and approved before execution. Classification is
-//! deliberately *conservative*: destructive programs, destructive argument
-//! forms on otherwise-approved CLIs, and destructive payloads passed to shell
-//! interpreters (`sh`/`bash`/`zsh` `-c`) are all confirmation-risk, even when
-//! user-authored. An arbitrary executable from an imported profile is
-//! confirmation-risk unless it is on the approved-CLI list.
+//! deliberately *fail-closed*: destructive programs, destructive argument
+//! forms on otherwise-approved CLIs, and *any* shell interpreter command-string
+//! form (`sh`/`bash`/`zsh` `-c`, including combined options like `-lc`) are
+//! confirmation-risk, even when user-authored — a shell payload is arbitrary
+//! code and cannot be safely reasoned about by name. An arbitrary executable
+//! from an imported profile is confirmation-risk unless it is on the
+//! approved-CLI list.
 
 use serde::{Deserialize, Serialize};
 
@@ -46,7 +48,8 @@ pub const DESTRUCTIVE_PROGRAMS: &[&str] = &[
     "chown",
 ];
 
-/// Shell interpreters whose `-c` payload is scanned for destructive commands.
+/// Shell interpreters whose command-string form (`-c`) is fail-closed
+/// confirmation-risk.
 const SHELL_INTERPRETERS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish"];
 
 /// Programs an imported profile may start without confirmation (spec §15.2's
@@ -55,6 +58,12 @@ pub const APPROVED_CLIS: &[&str] = &[
     "open", "git", "ls", "cat", "pwd", "echo", "true", "false", "mkdir", "cp", "mv", "herdr",
     "claude", "codex",
 ];
+
+/// `git` subcommands safe to run without confirmation. Everything else is
+/// confirmation-risk: `rm`, `clean`, `reset`, `push --force`, `branch -D`,
+/// `restore`, `checkout -- <path>`, `stash drop`, and unknown subcommands all
+/// fail closed.
+const SAFE_GIT_SUBCOMMANDS: &[&str] = &["status", "log", "diff", "show", "fetch"];
 
 /// Classifies the risk of running `spec`.
 ///
@@ -80,13 +89,13 @@ pub fn classify_argv(argv: &[String], imported: bool) -> RiskLevel {
     let base = program.rsplit('/').next().unwrap_or(program);
     let command_args = &argv[1..];
 
-    // A destructive payload passed to a shell interpreter is confirmation-risk
-    // regardless of provenance.
+    // Any shell interpreter command-string form (`-c`, including combined
+    // options such as `-lc`) is confirmation-risk regardless of provenance:
+    // the payload is arbitrary shell and cannot be reasoned about by name.
     if SHELL_INTERPRETERS.contains(&base)
-        && command_args.first().is_some_and(|flag| flag == "-c")
         && command_args
-            .get(1)
-            .is_some_and(|payload| shell_payload_is_destructive(payload))
+            .iter()
+            .any(|arg| arg.starts_with('-') && arg.contains('c'))
     {
         return RiskLevel::Confirmation;
     }
@@ -97,7 +106,8 @@ pub fn classify_argv(argv: &[String], imported: bool) -> RiskLevel {
     }
 
     // Destructive argument forms on otherwise-approved CLIs are
-    // confirmation-risk (e.g. `git clean -fdx`, `cp -f`, `mv --force`).
+    // confirmation-risk (`git` outside the safe-subcommand list, `cp`/`mv`
+    // without a proven no-overwrite flag).
     if destructive_cli_form(base, command_args) {
         return RiskLevel::Confirmation;
     }
@@ -110,57 +120,41 @@ pub fn classify_argv(argv: &[String], imported: bool) -> RiskLevel {
     RiskLevel::Low
 }
 
-/// Whether a shell `-c` payload mentions a destructive operation in command
-/// position (start of the payload or right after a `;`, `&`, `|`, or `(`).
-///
-/// This is a conservative token scan, not a shell parser: a false positive just
-/// prompts an approval, while a false negative could destroy data. Payloads
-/// that mention destructive programs or destructive git forms are treated as
-/// confirmation-risk.
-fn shell_payload_is_destructive(payload: &str) -> bool {
-    let words: Vec<&str> = payload.split_whitespace().collect();
-    let mut at_command_start = true;
-    for (index, raw) in words.iter().enumerate() {
-        let word = raw.trim_matches(|c| matches!(c, '\'' | '"' | '`'));
-        let base = word.rsplit('/').next().unwrap_or(word);
-        if at_command_start {
-            if DESTRUCTIVE_PROGRAMS.contains(&base) {
-                return true;
-            }
-            if base == "git" && git_payload_is_destructive(words.iter().copied().skip(index + 1)) {
-                return true;
-            }
-        }
-        at_command_start = raw.chars().any(|c| matches!(c, ';' | '&' | '|' | '('));
-    }
-    false
-}
-
-/// Whether a `git ...` payload is destructive (destructive subcommand forms).
-fn git_payload_is_destructive<'a>(rest: impl IntoIterator<Item = &'a str>) -> bool {
-    let rest: Vec<&str> = rest
-        .into_iter()
-        .map(|word| word.trim_matches(|c| c == '\'' || c == '"'))
-        .collect();
-    match rest.first().copied().unwrap_or("") {
-        "clean" => rest.iter().any(|arg| arg.starts_with("-f")),
-        "reset" => rest
-            .iter()
-            .any(|arg| matches!(*arg, "--hard" | "-f" | "--force")),
-        "push" => rest.iter().any(|arg| matches!(*arg, "-f" | "--force")),
-        _ => false,
-    }
-}
-
 /// Whether approved-CLI arguments form a destructive operation.
 fn destructive_cli_form(base: &str, args: &[String]) -> bool {
     match base {
-        "git" => git_payload_is_destructive(args.iter().map(String::as_str)),
-        "cp" | "mv" => args
-            .iter()
-            .any(|arg| arg.starts_with('-') && arg.contains('f')),
+        // Fail closed: only the safe-subcommand list is Low.
+        "git" => !safe_git_subcommand(args),
+        // `cp`/`mv` can overwrite an existing destination even without `-f`;
+        // they are only Low when a proven no-overwrite flag is present.
+        "cp" | "mv" => !has_no_overwrite_flag(args),
         _ => false,
     }
+}
+
+/// Whether the `git` invocation uses a safe subcommand.
+///
+/// The first non-option token is the subcommand; when it is absent or not in
+/// the safe list, the invocation fails closed to confirmation-risk.
+fn safe_git_subcommand(args: &[String]) -> bool {
+    args.iter()
+        .find(|arg| !arg.starts_with('-'))
+        .map(String::as_str)
+        .is_some_and(|subcommand| SAFE_GIT_SUBCOMMANDS.contains(&subcommand))
+}
+
+/// Whether `cp`/`mv` carry a proven no-overwrite flag (`-n`/`--no-clobber`).
+///
+/// `-i`/`--interactive` is *not* sufficient: an interactive overwrite prompt
+/// can still overwrite, so only hard no-clobber counts as a safe form.
+fn has_no_overwrite_flag(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        arg == "--no-clobber"
+            || (arg.starts_with('-')
+                && !arg.starts_with("--")
+                && arg.len() > 1
+                && arg.contains('n'))
+    })
 }
 
 #[cfg(test)]
@@ -208,6 +202,60 @@ mod tests {
     }
 
     #[test]
+    fn any_shell_command_string_form_is_confirmation_risk_even_when_user_authored() {
+        // Fail-closed: the payload is arbitrary shell, so every `-c` form is
+        // confirmation-risk, not just the ones a parser recognizes.
+        for program in ["sh", "bash", "zsh"] {
+            assert_eq!(
+                classify_command_risk(&command(program, &["-c", "echo hi"], false)),
+                RiskLevel::Confirmation,
+                "{program} -c must be confirmation-risk even with a benign payload"
+            );
+            assert_eq!(
+                classify_command_risk(&command(program, &["-c", "rm -rf /tmp/x"], false)),
+                RiskLevel::Confirmation,
+                "{program} -c with a destructive payload must be confirmation-risk"
+            );
+            // Attached separators no longer matter: the whole form fails closed.
+            assert_eq!(
+                classify_command_risk(&command(program, &["-c", "cd /tmp;rm -rf x"], false)),
+                RiskLevel::Confirmation,
+                "{program} -c with an attached separator must be confirmation-risk"
+            );
+            // Combined option forms (`-lc`) must not bypass the `-c` check.
+            assert_eq!(
+                classify_command_risk(&command(program, &["-lc", "rm -rf x"], false)),
+                RiskLevel::Confirmation,
+                "{program} -lc must be confirmation-risk"
+            );
+        }
+        // Absolute interpreter paths are detected too.
+        assert_eq!(
+            classify_command_risk(&command("/bin/sh", &["-c", "rm -rf /tmp/x"], false)),
+            RiskLevel::Confirmation
+        );
+    }
+
+    #[test]
+    fn non_command_string_shell_forms_are_not_fail_closed() {
+        // A script file (not a command string) is treated like any other
+        // user-authored executable; only an imported unknown script is
+        // confirmation-risk.
+        assert_eq!(
+            classify_command_risk(&command("sh", &["./deploy.sh"], false)),
+            RiskLevel::Low
+        );
+        assert_eq!(
+            classify_command_risk(&command("sh", &["-x", "script.sh"], false)),
+            RiskLevel::Low
+        );
+        assert_eq!(
+            classify_command_risk(&command("sh", &["-n", "script.sh"], false)),
+            RiskLevel::Low
+        );
+    }
+
+    #[test]
     fn approved_clis_from_imported_profiles_are_low_risk() {
         for program in ["open", "git", "ls", "cat", "pwd", "echo", "herdr", "claude"] {
             assert_eq!(
@@ -219,71 +267,70 @@ mod tests {
     }
 
     #[test]
-    fn destructive_shell_payloads_are_confirmation_risk_even_when_user_authored() {
-        for program in ["sh", "bash", "zsh"] {
+    fn git_outside_the_safe_subcommand_list_is_confirmation_risk() {
+        for (args, label) in [
+            (vec!["clean", "-fdx"], "git clean -fdx"),
+            (vec!["reset", "--hard"], "git reset --hard"),
+            (vec!["push", "--force"], "git push --force"),
+            (vec!["rm", "file"], "git rm"),
+            (vec!["branch", "-D", "topic"], "git branch -D"),
+            (vec!["restore", "file"], "git restore"),
+            (vec!["checkout", "--", "file"], "git checkout -- path"),
+            (vec!["stash", "drop"], "git stash drop"),
+            (vec!["pull"], "git pull"),
+            (vec!["reset"], "git reset"),
+        ] {
+            let argv = std::iter::once("git".to_string())
+                .chain(args.iter().map(|arg| (*arg).to_string()))
+                .collect();
+            let spec = CommandSpec::new(argv).with_imported(true);
             assert_eq!(
-                classify_command_risk(&command(program, &["-c", "rm -rf /tmp/x"], false)),
+                classify_command_risk(&spec),
                 RiskLevel::Confirmation,
-                "{program} -c with a destructive payload must be confirmation-risk"
-            );
-            assert_eq!(
-                classify_command_risk(&command(program, &["-c", "cd /tmp && dd if=/dev/zero of=x"], false)),
-                RiskLevel::Confirmation,
-                "{program} -c with a destructive payload after a separator must be confirmation-risk"
+                "{label} must be confirmation-risk"
             );
         }
-        // Absolute interpreter paths are detected too.
-        assert_eq!(
-            classify_command_risk(&command("/bin/sh", &["-c", "rm -rf /tmp/x"], false)),
-            RiskLevel::Confirmation
-        );
     }
 
     #[test]
-    fn non_destructive_shell_payloads_stay_low() {
-        assert_eq!(
-            classify_command_risk(&command("sh", &["-c", "echo hi"], false)),
-            RiskLevel::Low
-        );
-        assert_eq!(
-            classify_command_risk(&command("sh", &["-c", "echo rm"], false)),
-            RiskLevel::Low,
-            "a destructive word not in command position is not an invocation"
-        );
+    fn git_safe_subcommands_are_low_risk() {
+        for subcommand in ["status", "log", "diff", "show", "fetch"] {
+            assert_eq!(
+                classify_command_risk(&command("git", &[subcommand], true)),
+                RiskLevel::Low,
+                "git {subcommand} must be a low-risk safe subcommand"
+            );
+        }
     }
 
     #[test]
-    fn destructive_git_forms_are_confirmation_risk() {
+    fn cp_and_mv_require_a_proven_no_overwrite_form() {
+        // Without `-n`/`--no-clobber`, cp/mv can overwrite an existing
+        // destination, so they are confirmation-risk.
         assert_eq!(
-            classify_command_risk(&command("git", &["clean", "-fdx"], true)),
+            classify_command_risk(&command("cp", &["source", "dest"], true)),
             RiskLevel::Confirmation
         );
         assert_eq!(
-            classify_command_risk(&command("git", &["reset", "--hard", "HEAD~1"], false)),
+            classify_command_risk(&command("mv", &["source", "dest"], true)),
             RiskLevel::Confirmation
         );
-        assert_eq!(
-            classify_command_risk(&command("git", &["push", "--force"], false)),
-            RiskLevel::Confirmation
-        );
-        assert_eq!(
-            classify_command_risk(&command("git", &["status"], true)),
-            RiskLevel::Low
-        );
-    }
-
-    #[test]
-    fn destructive_cp_and_mv_forms_are_confirmation_risk() {
         assert_eq!(
             classify_command_risk(&command("cp", &["-rf", "/a", "/b"], true)),
             RiskLevel::Confirmation
         );
         assert_eq!(
-            classify_command_risk(&command("mv", &["--force", "/a", "/b"], false)),
-            RiskLevel::Confirmation
+            classify_command_risk(&command("cp", &["-r", "/a", "/b"], false)),
+            RiskLevel::Confirmation,
+            "recursive copy can still overwrite an existing destination"
+        );
+        // A proven no-overwrite flag is Low.
+        assert_eq!(
+            classify_command_risk(&command("cp", &["-rn", "/a", "/b"], true)),
+            RiskLevel::Low
         );
         assert_eq!(
-            classify_command_risk(&command("cp", &["-r", "/a", "/b"], true)),
+            classify_command_risk(&command("mv", &["--no-clobber", "/a", "/b"], false)),
             RiskLevel::Low
         );
     }

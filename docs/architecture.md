@@ -143,9 +143,11 @@ a timeout, and a visible-terminal flag (default on for development commands).
 Before any review or execution the spec is resolved into an immutable
 `ResolvedPlan` — exact working directory and full environment snapshot — so
 approval and execution operate on the same plan. `classify_argv` is
-conservative: destructive programs, destructive argument forms on approved
-CLIs (`git clean -fdx`, `cp -f`), destructive `sh`/`bash`/`zsh` `-c` payloads,
-and arbitrary imported executables are all confirmation-risk. `CommandRunner`
+fail-closed: destructive programs, *any* shell interpreter command-string form
+(`sh`/`bash`/`zsh` `-c`, including combined options), `cp`/`mv` without a
+proven no-overwrite flag, `git` outside the safe-subcommand list
+(`status`/`log`/`diff`/`show`/`fetch`), and arbitrary imported executables are
+all confirmation-risk. `CommandRunner`
 is the *only* public execution path and **enforces** review-before-execute on
 the resolved plan: `ApprovalStore` refuses an unapproved imported
 confirmation-risk plan with `RunStatus::ApprovalRequired`, so changing the
