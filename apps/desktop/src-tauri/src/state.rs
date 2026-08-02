@@ -58,6 +58,8 @@ pub struct ShellState {
     pub adapters: AdapterState,
     /// The validated active profile router fed by the native event tap.
     router: Mutex<BindingRouter>,
+    profiles: Vec<hotwire_profile::Profile>,
+    active_profile: Mutex<usize>,
     /// Serializes the pause/resume/shutdown lifecycle (tap + adapter).
     recovery: RecoveryGate,
 }
@@ -75,6 +77,18 @@ impl ShellState {
             "../../../../packages/profiles/fixtures/ai-numpad.yaml"
         ))
         .expect("canonical AI Numpad fixture must remain valid");
+        let profiles = vec![
+            Ok(profile.clone()),
+            hotwire_profile::parse_yaml(include_str!(
+                "../../../../packages/profiles/fixtures/herdr-numpad.yaml"
+            )),
+            hotwire_profile::parse_yaml(include_str!(
+                "../../../../packages/profiles/fixtures/comet-numpad.yaml"
+            )),
+        ]
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("built-in profiles must remain valid");
         Self {
             tap,
             pause_item,
@@ -84,6 +98,8 @@ impl ShellState {
                 BindingRouter::new(profile, RouterConfig::default())
                     .expect("canonical AI Numpad fixture must be routable"),
             ),
+            profiles,
+            active_profile: Mutex::new(0),
             recovery: RecoveryGate::default(),
         }
     }
@@ -102,8 +118,25 @@ impl ShellState {
         let router = BindingRouter::new(profile.clone(), RouterConfig::default())
             .map_err(|error| error.to_string())?;
         *self.router.lock().expect("router lock") = router;
+        if let Some(index) = self
+            .profiles
+            .iter()
+            .position(|candidate| candidate.id == profile.id)
+        {
+            *self.active_profile.lock().expect("active profile lock") = index;
+        }
         self.configure_profile(&profile);
         Ok(())
+    }
+
+    fn switch_profile(&self) -> Result<String, String> {
+        let mut index = self.active_profile.lock().expect("active profile lock");
+        *index = (*index + 1) % self.profiles.len();
+        let profile = self.profiles[*index].clone();
+        let id = profile.id.clone();
+        drop(index);
+        self.activate_profile(profile)?;
+        Ok(id)
     }
 
     fn configure_profile(&self, profile: &hotwire_profile::Profile) {
@@ -134,6 +167,29 @@ impl ShellState {
         };
 
         for invocation in outcome.invocations {
+            if invocation.action_id == "profile.switch" {
+                let (status, message) = match self.switch_profile() {
+                    Ok(profile) => (
+                        hotwire_core::ActionStatus::Succeeded,
+                        Some(format!("Switched to {profile}")),
+                    ),
+                    Err(error) => (hotwire_core::ActionStatus::Failed, Some(error)),
+                };
+                self.record_and_emit(
+                    app,
+                    ActionReceipt {
+                        execution_id: invocation.execution_id,
+                        profile_id: invocation.profile_id,
+                        binding_id: invocation.binding_id,
+                        physical_code: event.physical_code.clone(),
+                        action_id: invocation.action_id,
+                        adapter_id: invocation.adapter_id,
+                        status,
+                        message,
+                    },
+                );
+                continue;
+            }
             let receipt = self
                 .adapters
                 .run_invocation(invocation, &event.physical_code)
