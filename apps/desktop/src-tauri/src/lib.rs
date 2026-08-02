@@ -18,8 +18,6 @@ mod state;
 mod tray;
 mod window;
 
-use std::sync::Mutex;
-
 use hotwire_input_macos::QuartzEventTap;
 use tauri::Manager;
 
@@ -28,12 +26,11 @@ pub fn run() {
     let app = tauri::Builder::default()
         .setup(|app| {
             let pause_item = state::create_pause_item(app.handle())?;
-            app.manage(state::ShellState {
-                tap: QuartzEventTap::new(),
-                pause_item: pause_item.clone(),
-                last_receipt: Mutex::new(None),
-            });
-            app.manage(adapters::AdapterState::new());
+            app.manage(state::ShellState::new(
+                QuartzEventTap::new(),
+                pause_item.clone(),
+                adapters::AdapterState::new(),
+            ));
             tray::setup_tray(app.handle(), &pause_item)?;
             Ok(())
         })
@@ -64,11 +61,12 @@ pub fn run() {
             tauri::RunEvent::Reopen { .. } => {
                 let _ = window::show_main_window(app_handle);
             }
-            // Best-effort shutdown: release any logically held push-to-talk or
-            // shortcut keys before quitting (fail-open, spec §15.5).
+            // Clean shutdown (fail-open, spec §15.5): stop capture on the tap
+            // and cancel/release every active adapter hold so no key is left
+            // logically down when the process exits.
             tauri::RunEvent::Exit => {
-                let state = app_handle.state::<adapters::AdapterState>();
-                let _ = tauri::async_runtime::block_on(state.release_active());
+                let state = app_handle.state::<state::ShellState>();
+                let _ = tauri::async_runtime::block_on(state.shutdown());
             }
             _ => {}
         }

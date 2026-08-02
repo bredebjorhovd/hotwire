@@ -42,13 +42,20 @@ impl AdapterState {
         Self::with_registry(registry)
     }
 
-    /// Builds a state around a pre-populated registry (used by tests).
-    fn with_registry(registry: AdapterRegistry) -> Self {
+    /// Builds a state around a pre-populated registry (used by tests and the
+    /// recovery lifecycle).
+    pub(crate) fn with_registry(registry: AdapterRegistry) -> Self {
         Self {
             registry,
             active: Mutex::new(HashMap::new()),
             next_execution: AtomicU64::new(0),
         }
+    }
+
+    /// How many adapter executions are currently tracked as in flight.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn active_count(&self) -> usize {
+        self.active.lock().expect("active lock").len()
     }
 
     /// Runs one action through its adapter and returns the resulting receipt.

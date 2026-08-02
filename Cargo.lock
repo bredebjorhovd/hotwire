@@ -1247,6 +1247,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "hotwire-adapter-herdr"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hotwire-adapter-sdk",
+ "hotwire-core",
+ "hotwire-input-macos",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "hotwire-adapter-papegoye"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hotwire-adapter-sdk",
+ "hotwire-core",
+ "hotwire-input-macos",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
 name = "hotwire-adapter-sdk"
 version = "0.1.0"
 dependencies = [
@@ -1270,14 +1298,19 @@ dependencies = [
 name = "hotwire-desktop"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "hotwire-adapter-herdr",
+ "hotwire-adapter-papegoye",
  "hotwire-adapter-sdk",
  "hotwire-core",
  "hotwire-input-macos",
  "hotwire-profile",
+ "hotwire-router",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tokio",
 ]
 
 [[package]]

@@ -119,20 +119,25 @@ pub fn diagnostics(state: tauri::State<'_, crate::state::ShellState>) -> Diagnos
     }
 }
 
-/// Pauses capture (fail-open recovery surface). Returns the new paused state.
+/// Pauses the shell (fail-open recovery surface): stops capture on the tap
+/// and cancels/releases every active adapter hold so no key stays logically
+/// held. Returns the new paused state.
+///
+/// # Errors
+///
+/// Returns a readable error when the pause cannot complete.
 #[tauri::command]
-pub fn pause_capture(state: tauri::State<'_, crate::state::ShellState>) -> bool {
-    let paused = crate::state::pause_capture(&state.tap);
-    crate::state::sync_pause_label(&state.pause_item, paused);
-    paused
+pub async fn pause_capture(
+    state: tauri::State<'_, crate::state::ShellState>,
+) -> Result<bool, String> {
+    let _ = state.pause().await;
+    Ok(state.tap.is_paused())
 }
 
-/// Resumes capture after a pause. Returns the new paused state.
+/// Resumes the shell after a pause. Returns the new paused state.
 #[tauri::command]
 pub fn resume_capture(state: tauri::State<'_, crate::state::ShellState>) -> bool {
-    let paused = crate::state::resume_capture(&state.tap);
-    crate::state::sync_pause_label(&state.pause_item, paused);
-    paused
+    state.resume()
 }
 
 /// Runs one action through a registered adapter and emits the resulting
@@ -144,7 +149,7 @@ pub fn resume_capture(state: tauri::State<'_, crate::state::ShellState>) -> bool
 #[tauri::command]
 pub async fn run_adapter_action(
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::adapters::AdapterState>,
+    state: tauri::State<'_, crate::state::ShellState>,
     adapter_id: String,
     action_id: String,
     trigger: Trigger,
@@ -152,6 +157,7 @@ pub async fn run_adapter_action(
     physical_code: String,
 ) -> Result<ActionReceipt, String> {
     let receipt = state
+        .adapters
         .run(&adapter_id, &action_id, trigger, config, &physical_code)
         .await;
     let _ = crate::events::emit_action_receipt(&app, &receipt);
@@ -163,12 +169,13 @@ pub async fn run_adapter_action(
 #[tauri::command]
 pub async fn release_adapter_action(
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::adapters::AdapterState>,
+    state: tauri::State<'_, crate::state::ShellState>,
     adapter_id: String,
     execution_id: String,
     physical_code: String,
 ) -> Result<ActionReceipt, String> {
     let receipt = state
+        .adapters
         .release(&adapter_id, &execution_id, &physical_code)
         .await;
     let _ = crate::events::emit_action_receipt(&app, &receipt);
@@ -179,12 +186,13 @@ pub async fn release_adapter_action(
 #[tauri::command]
 pub async fn cancel_adapter_action(
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::adapters::AdapterState>,
+    state: tauri::State<'_, crate::state::ShellState>,
     adapter_id: String,
     execution_id: String,
     physical_code: String,
 ) -> Result<ActionReceipt, String> {
     let receipt = state
+        .adapters
         .cancel(&adapter_id, &execution_id, &physical_code)
         .await;
     let _ = crate::events::emit_action_receipt(&app, &receipt);
@@ -198,10 +206,10 @@ pub async fn cancel_adapter_action(
 /// Returns an error when the adapter is not registered.
 #[tauri::command]
 pub async fn detect_adapter(
-    state: tauri::State<'_, crate::adapters::AdapterState>,
+    state: tauri::State<'_, crate::state::ShellState>,
     adapter_id: String,
 ) -> Result<hotwire_adapter_sdk::DetectionResult, String> {
-    state.detect(&adapter_id).await
+    state.adapters.detect(&adapter_id).await
 }
 
 /// Validates a binding config against one registered adapter.
@@ -211,11 +219,11 @@ pub async fn detect_adapter(
 /// Returns an error when the adapter is not registered.
 #[tauri::command]
 pub async fn validate_adapter_config(
-    state: tauri::State<'_, crate::adapters::AdapterState>,
+    state: tauri::State<'_, crate::state::ShellState>,
     adapter_id: String,
     config: Value,
 ) -> Result<hotwire_adapter_sdk::ValidationResult, String> {
-    state.validate_config(&adapter_id, &config).await
+    state.adapters.validate_config(&adapter_id, &config).await
 }
 
 /// The fixture receipt used by `mock_action_receipt`.
