@@ -5,18 +5,29 @@ import { loadFixtureProfile } from "../features/catalog/fixtures";
 import { useTheme } from "../features/board/useTheme";
 import { BoardScreen } from "../features/board/BoardScreen";
 import { Wizard, type WizardChoices } from "../features/wizard/Wizard";
-import { getAppStatus, type AppStatus } from "../features/bridge/ipc";
+import {
+  emitMockActionReceipt,
+  getAppStatus,
+  isRunningInTauri,
+  type AppStatus,
+} from "../features/bridge/ipc";
+import { receiptRouteLabel } from "../features/bridge/receipts";
+import { useActionReceipts } from "../features/bridge/useActionReceipts";
 
 /**
  * Application root. First launch opens directly into the setup wizard; after
  * Finish it shows the live Board. Dark/light appearance and the shell-status
- * footer live here so every screen inherits them.
+ * footer live here so every screen inherits them. The footer's LAST ACTION
+ * item mirrors the menu-bar popover (§6.1) and is fed by native
+ * `ActionReceipt` events when running under Tauri.
  */
 export function App() {
   const { theme, toggle } = useTheme();
   const [mode, setMode] = useState<"wizard" | "board">("wizard");
   const [activeProfileId, setActiveProfileId] = useState("ai-numpad");
   const [status, setStatus] = useState<AppStatus | null>(null);
+  const [sendingMock, setSendingMock] = useState(false);
+  const receipt = useActionReceipts();
 
   useEffect(() => {
     void getAppStatus().then(setStatus);
@@ -25,6 +36,15 @@ export function App() {
   const finishSetup = (choices: WizardChoices) => {
     if (choices.profileId) setActiveProfileId(choices.profileId);
     setMode("board");
+  };
+
+  const sendMockReceipt = async () => {
+    setSendingMock(true);
+    try {
+      await emitMockActionReceipt();
+    } finally {
+      setSendingMock(false);
+    }
   };
 
   const activeProfile = loadFixtureProfile(activeProfileId);
@@ -37,6 +57,16 @@ export function App() {
           HOTWIRE
         </span>
         <span className="header-tools">
+          {isRunningInTauri() && (
+            <Button
+              variant="ghost"
+              onClick={sendMockReceipt}
+              disabled={sendingMock}
+              aria-label="Emit a mocked action receipt from the Rust shell"
+            >
+              TEST RECEIPT
+            </Button>
+          )}
           <Button
             variant="ghost"
             onClick={toggle}
@@ -66,6 +96,10 @@ export function App() {
           </span>
           <span className="system-item">
             CAPTURE <b>{status?.captureAvailable ? "on" : "off"}</b>
+          </span>
+          <span className="system-item" aria-label="Last action">
+            LAST ACTION{" "}
+            <b>{receipt ? receiptRouteLabel(receipt) : "—"}</b>
           </span>
         </div>
       </footer>

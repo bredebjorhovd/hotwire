@@ -23,5 +23,12 @@ describe("App", () => {
     // Shell-status footer mirrors the BOOT-001 IPC boundary.
     expect(screen.getByText("SHELL")).toBeInTheDocument();
     expect(screen.getByText("SCHEMA")).toBeInTheDocument();
+
+    // The menu-bar popover's "last action" readout (spec §6.1) renders empty
+    // until the shell emits a receipt; outside Tauri no mock button appears.
+    expect(screen.getByText("LAST ACTION")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /emit a mocked action receipt/i }),
+    ).not.toBeInTheDocument();
   });
 });

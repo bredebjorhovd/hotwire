@@ -9,7 +9,9 @@
     "build": "pnpm --recursive build",
     "dev": "pnpm --filter @hotwire/desktop dev",
     "test": "pnpm --recursive test",
-    "typecheck": "pnpm --recursive typecheck"
+    "typecheck": "pnpm --recursive typecheck",
+    "desktop:dev": "pnpm --filter @hotwire/desktop desktop:dev",
+    "desktop:build": "pnpm --filter @hotwire/desktop desktop:build"
   }
 }
 

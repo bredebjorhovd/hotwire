@@ -17,6 +17,7 @@ hotwire-adapter-sdk = { path = "../../../crates/hotwire-adapter-sdk" }
 hotwire-core = { path = "../../../crates/hotwire-core" }
 hotwire-profile = { path = "../../../crates/hotwire-profile" }
 serde.workspace = true
+serde_json.workspace = true
 tauri.workspace = true
 
 [lints]
