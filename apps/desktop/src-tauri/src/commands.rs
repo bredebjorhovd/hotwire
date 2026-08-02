@@ -135,9 +135,15 @@ pub async fn pause_capture(
 }
 
 /// Resumes the shell after a pause. Returns the new paused state.
+///
+/// # Errors
+///
+/// Returns a readable error when the resume cannot complete.
 #[tauri::command]
-pub fn resume_capture(state: tauri::State<'_, crate::state::ShellState>) -> bool {
-    state.resume()
+pub async fn resume_capture(
+    state: tauri::State<'_, crate::state::ShellState>,
+) -> Result<bool, String> {
+    Ok(state.resume().await)
 }
 
 /// Runs one action through a registered adapter and emits the resulting

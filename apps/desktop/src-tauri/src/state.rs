@@ -10,10 +10,14 @@
 //! and cancel/release every active adapter hold — so no key stays logically
 //! held and no action keeps running. Recovery ordering is fail-open: capture is
 //! stopped first so no new input can start actions while we unwind, then the
-//! active adapter holds are released. Every lifecycle operation is idempotent:
-//! a second pause or shutdown releases nothing. When shell executions land
-//! (the `hotwire-runner` `CommandRunner`), the same lifecycle is the single
-//! place their cancellations join the adapter holds and the tap.
+//! active adapter holds are released. [`AdapterState`] serializes that release
+//! against any in-progress start (waits for it, then releases everything) and
+//! rejects fresh adapter starts while paused or stopped. Every lifecycle
+//! operation is idempotent: a second pause or shutdown releases nothing — but a
+//! hold whose release previously failed stays tracked and is retried. When
+//! shell executions land (the `hotwire-runner` `CommandRunner`), the same
+//! lifecycle is the single place their cancellations join the adapter holds and
+//! the tap.
 
 use std::sync::Mutex;
 
@@ -30,15 +34,6 @@ pub const PAUSE_LABEL: &str = "Pause capture";
 /// Label shown while capture is paused.
 pub const RESUME_LABEL: &str = "Resume capture";
 
-/// The lifecycle flags that make recovery idempotent.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Lifecycle {
-    /// A pause was requested and its adapter holds have been released.
-    paused: bool,
-    /// The shell has been shut down and must never run again.
-    stopped: bool,
-}
-
 /// Process-wide state managed by the Tauri shell.
 pub struct ShellState {
     /// The shared macOS capture tap (created but not started by default).
@@ -49,8 +44,6 @@ pub struct ShellState {
     pub last_receipt: Mutex<Option<ActionReceipt>>,
     /// The adapter execution surface (ADP-001 vertical slice).
     pub adapters: AdapterState,
-    /// Idempotence flags for the pause/shutdown lifecycle.
-    pub lifecycle: Mutex<Lifecycle>,
 }
 
 impl ShellState {
@@ -67,14 +60,13 @@ impl ShellState {
             pause_item,
             last_receipt: Mutex::new(None),
             adapters,
-            lifecycle: Mutex::new(Lifecycle::default()),
         }
     }
 
     /// Whether the shell is currently paused (its adapter holds released).
     #[must_use]
     pub fn is_paused(&self) -> bool {
-        self.lifecycle.lock().expect("lifecycle lock").paused
+        self.adapters.is_paused()
     }
 
     /// Pauses the shell: stops capture on the tap and cancels/releases every
@@ -82,7 +74,7 @@ impl ShellState {
     ///
     /// Returns how many adapter holds were released.
     pub async fn pause(&self) -> usize {
-        let released = pause_recovery(&self.tap, &self.adapters, &self.lifecycle).await;
+        let released = pause_recovery(&self.tap, &self.adapters).await;
         sync_pause_label(&self.pause_item, self.tap.is_paused());
         released
     }
@@ -90,8 +82,8 @@ impl ShellState {
     /// Resumes the shell after a pause (adapter holds stay released).
     ///
     /// Returns the new paused state (`false` when resumed).
-    pub fn resume(&self) -> bool {
-        let paused = resume_recovery(&self.tap, &self.lifecycle);
+    pub async fn resume(&self) -> bool {
+        let paused = resume_recovery(&self.tap, &self.adapters).await;
         sync_pause_label(&self.pause_item, paused);
         paused
     }
@@ -101,63 +93,41 @@ impl ShellState {
     ///
     /// Returns how many adapter holds were released.
     pub async fn shutdown(&self) -> usize {
-        shutdown_recovery(&self.tap, &self.adapters, &self.lifecycle).await
+        shutdown_recovery(&self.tap, &self.adapters).await
     }
 }
 
 /// Pauses recovery across both surfaces, testable without a window or menu.
 ///
 /// Fail-open ordering: capture is paused before any adapter hold is released.
-/// Idempotent via `lifecycle.paused`.
-pub async fn pause_recovery(
-    tap: &QuartzEventTap,
-    adapters: &AdapterState,
-    lifecycle: &Mutex<Lifecycle>,
-) -> usize {
-    {
-        let mut lifecycle = lifecycle.lock().expect("lifecycle lock");
-        if lifecycle.paused {
-            // Already paused: still fail-open, but release nothing again.
-            drop(lifecycle);
-            pause_capture(tap);
-            return 0;
-        }
-        lifecycle.paused = true;
-    }
+/// The adapter surface gates fresh starts and releases every active hold,
+/// waiting for any in-progress start first. Idempotent via the tracking map:
+/// a second pause releases nothing, but retries holds whose release failed.
+pub async fn pause_recovery(tap: &QuartzEventTap, adapters: &AdapterState) -> usize {
     pause_capture(tap);
-    adapters.release_active().await
+    adapters.pause().await
 }
 
-/// Resumes recovery on the tap, clearing the paused flag.
-pub fn resume_recovery(tap: &QuartzEventTap, lifecycle: &Mutex<Lifecycle>) -> bool {
-    let mut lifecycle = lifecycle.lock().expect("lifecycle lock");
-    if lifecycle.stopped {
+/// Resumes recovery on the tap, re-enabling adapter starts before capture.
+///
+/// A stopped shell stays stopped — nothing re-enables starts after shutdown.
+pub async fn resume_recovery(tap: &QuartzEventTap, adapters: &AdapterState) -> bool {
+    if adapters.is_stopped() {
         return tap.is_paused();
     }
-    lifecycle.paused = false;
+    adapters.resume().await;
     resume_capture(tap)
 }
 
 /// Shutdown recovery across both surfaces, testable without a window or menu.
 ///
 /// Fail-open ordering: the tap is stopped (which releases any keys it
-/// injected) before active adapter holds are cancelled. Idempotent via
-/// `lifecycle.stopped`.
-pub async fn shutdown_recovery(
-    tap: &QuartzEventTap,
-    adapters: &AdapterState,
-    lifecycle: &Mutex<Lifecycle>,
-) -> usize {
-    {
-        let mut lifecycle = lifecycle.lock().expect("lifecycle lock");
-        if lifecycle.stopped {
-            return 0;
-        }
-        lifecycle.stopped = true;
-        lifecycle.paused = true;
-    }
+/// injected) before active adapter holds are cancelled. Adapter starts are
+/// disabled permanently and every active hold is released, with in-progress
+/// starts waited out first. Idempotent via the tracking map.
+pub async fn shutdown_recovery(tap: &QuartzEventTap, adapters: &AdapterState) -> usize {
     tap.stop();
-    adapters.release_active().await
+    adapters.shutdown().await
 }
 
 /// Creates the menu-bar pause item.
@@ -309,15 +279,13 @@ mod tests {
     #[tokio::test]
     async fn pause_releases_active_holds_and_is_idempotent() {
         let (tap, adapters, recorded) = recovery_fixture();
-        let lifecycle = Mutex::new(Lifecycle::default());
-
         let started = start_hold(&adapters).await;
         assert_eq!(started.status, hotwire_core::ActionStatus::Started);
         assert_eq!(adapters.active_count(), 1);
 
         // Pause stops capture and releases the hold, key before modifiers.
         assert!(!tap.is_paused());
-        assert_eq!(pause_recovery(&tap, &adapters, &lifecycle).await, 1);
+        assert_eq!(pause_recovery(&tap, &adapters).await, 1);
         assert!(tap.is_paused(), "capture stops on pause (fail-open)");
         assert_eq!(adapters.active_count(), 0, "no adapter hold survives pause");
         assert_eq!(
@@ -331,7 +299,7 @@ mod tests {
         );
 
         // A second pause releases nothing.
-        assert_eq!(pause_recovery(&tap, &adapters, &lifecycle).await, 0);
+        assert_eq!(pause_recovery(&tap, &adapters).await, 0);
         assert_eq!(
             recorded.ups.lock().expect("lock").len(),
             2,
@@ -342,13 +310,11 @@ mod tests {
     #[tokio::test]
     async fn shutdown_releases_active_holds_and_is_idempotent() {
         let (tap, adapters, recorded) = recovery_fixture();
-        let lifecycle = Mutex::new(Lifecycle::default());
-
         let started = start_hold(&adapters).await;
         assert_eq!(started.status, hotwire_core::ActionStatus::Started);
         assert_eq!(adapters.active_count(), 1);
 
-        assert_eq!(shutdown_recovery(&tap, &adapters, &lifecycle).await, 1);
+        assert_eq!(shutdown_recovery(&tap, &adapters).await, 1);
         assert_eq!(tap.status(), hotwire_input_macos::TapStatus::Stopped);
         assert_eq!(
             adapters.active_count(),
@@ -360,7 +326,7 @@ mod tests {
         assert_eq!(recorded.ups.lock().expect("lock").as_slice(), &[0x31, 0x3F]);
 
         // A second shutdown releases nothing.
-        assert_eq!(shutdown_recovery(&tap, &adapters, &lifecycle).await, 0);
+        assert_eq!(shutdown_recovery(&tap, &adapters).await, 0);
         assert_eq!(
             recorded.ups.lock().expect("lock").len(),
             2,
@@ -371,13 +337,11 @@ mod tests {
     #[tokio::test]
     async fn shutdown_after_pause_is_a_noop() {
         let (tap, adapters, recorded) = recovery_fixture();
-        let lifecycle = Mutex::new(Lifecycle::default());
-
         start_hold(&adapters).await;
-        assert_eq!(pause_recovery(&tap, &adapters, &lifecycle).await, 1);
+        assert_eq!(pause_recovery(&tap, &adapters).await, 1);
 
         // A later shutdown must not double-release the already-freed holds.
-        assert_eq!(shutdown_recovery(&tap, &adapters, &lifecycle).await, 0);
+        assert_eq!(shutdown_recovery(&tap, &adapters).await, 0);
         assert_eq!(
             recorded.ups.lock().expect("lock").len(),
             2,

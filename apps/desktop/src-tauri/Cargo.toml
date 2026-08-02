@@ -23,10 +23,11 @@ hotwire-router = { path = "../../../crates/hotwire-router" }
 serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 async-trait.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 
 [lints]
 workspace = true

@@ -52,7 +52,7 @@ pub fn setup_tray(app: &AppHandle, pause: &MenuItem<tauri::Wry>) -> tauri::Resul
                 // Pause/resume drives both recovery surfaces: capture on the
                 // tap and every active adapter hold (fail-open, spec §15.5).
                 if state.is_paused() {
-                    state.resume();
+                    let _ = tauri::async_runtime::block_on(state.resume());
                 } else {
                     let _ = tauri::async_runtime::block_on(state.pause());
                 }
